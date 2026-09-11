@@ -4,10 +4,6 @@ Things that were measured rather than assumed while building this, kept because
 each one cost real time to discover and every one of them is a trap somebody
 else will walk into.
 
-The original working log, in Traditional Chinese and far longer, is
-[FINDINGS.zh-TW.md](FINDINGS.zh-TW.md). It documents the standalone-process
-predecessor as well, which this plugin replaces.
-
 ## 1. hyprexpo cannot show the real desktop behind it
 
 The obvious thing to build on. It cannot work, for a structural reason:
