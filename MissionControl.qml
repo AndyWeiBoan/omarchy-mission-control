@@ -264,6 +264,26 @@ Item {
     onTriggered: root.dismiss()
   }
 
+  // Window titles and app ids are chosen by the application itself, and a web
+  // page can set its browser tab's title, so every one of these strings is
+  // attacker-influenced by the time it reaches us. Two defences, both applied
+  // at the point of display:
+  //
+  // 1. `textFormat: Text.PlainText` on every sink that shows one. A QML Text
+  //    defaults to Text.AutoText, which sniffs the string for HTML and switches
+  //    to rich text when it finds any -- and rich text follows markup into
+  //    resource handling. A title is data, never markup.
+  // 2. A documented length cap, applied here rather than relying on elide.
+  //    Eliding only stops it being *drawn*; the whole string is still laid out.
+  readonly property int maxLabelLength: 128
+
+  function displayLabel(value) {
+    const text = String(value || "");
+    return text.length > root.maxLabelLength
+      ? text.slice(0, root.maxLabelLength) + "\u2026"
+      : text;
+  }
+
   // Icon for a window, looked up from its app id. heuristicLookup copes with
   // the usual mismatches between a Wayland app id and a .desktop file name.
   function iconFor(appId) {
@@ -843,7 +863,10 @@ Item {
                   height: panel.stripLabelBand
                   horizontalAlignment: Text.AlignHCenter
                   verticalAlignment: Text.AlignVCenter
-                  text: String(deskCell.modelData.name || deskCell.modelData.id)
+                  // Same treatment as the window title: a workspace name is
+                  // configuration-supplied text, not markup.
+                  textFormat: Text.PlainText
+                  text: root.displayLabel(deskCell.modelData.name || deskCell.modelData.id)
                   // An explicit sans face: the system's default `sans` resolves
                   // to Comic Code here, a monospace whose digits look like kana
                   // once they are scaled up.
@@ -974,7 +997,9 @@ Item {
               x: (win.width - width) / 2
               y: appIcon.y + appIcon.height + Math.round(panel.titleSize * 0.5)
               horizontalAlignment: Text.AlignHCenter
-              text: String(win.modelData.title || win.ipc["class"] || "")
+              // Untrusted: see root.displayLabel.
+              textFormat: Text.PlainText
+              text: root.displayLabel(win.modelData.title || win.ipc["class"] || "")
               font.family: root.fontFamily
               font.pixelSize: panel.titleSize
               color: win.isSelected ? "#ffffff" : Qt.rgba(1, 1, 1, 0.78)
@@ -1010,6 +1035,7 @@ Item {
           Behavior on opacity { NumberAnimation { duration: 140 } }
           anchors.horizontalCenter: parent.horizontalCenter
           y: panel.exposeAreaY + panel.exposeAreaH * 0.42
+          textFormat: Text.PlainText
           text: "No windows"
           font.family: root.fontFamily
           font.pixelSize: Math.round(22 * panel.uiScale)

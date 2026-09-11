@@ -162,7 +162,30 @@ working and a reload does not clear them; restarting the compositor (or
 emits SWIPE events for three or more fingers. Two fingers is always scroll or
 pinch, and there is no horizontal-scroll bind to hang a workspace switch off.
 
-## 13. Plugin contract notes
+## 13. Window titles are untrusted input
+
+Every string this plugin displays about a window -- its title and its app id --
+is chosen by the application itself. A web page can set its browser tab's title,
+so a remote page can put arbitrary text into the overview.
+
+A QML `Text` defaults to `textFormat: Text.AutoText`, which sniffs the string for
+HTML and silently switches to rich text when it finds any -- and the rich-text
+path handles resources rather than merely drawing characters. Displaying a
+window title in an AutoText sink therefore lets a title act as markup.
+
+Both defences are applied where the value enters the UI:
+
+- **`textFormat: Text.PlainText` on every sink.** Not just the title: the
+  workspace-name label takes the same treatment, because it is configuration
+  text rather than markup too.
+- **A length cap of 128 characters**, applied before the string reaches the
+  item (`root.maxLabelLength` / `root.displayLabel`). `elide` is not a
+  substitute: eliding only stops the text being *drawn*, the whole string is
+  still laid out.
+
+Found by the Omarchy marketplace security review, not by this project.
+
+## 14. Plugin contract notes
 
 - `close()` is what the shell calls when **it** closes the plugin. It must not
   call back into `shell.hide()`, or the two recurse until
