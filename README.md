@@ -2,6 +2,8 @@
 
 A macOS-style workspace overview for [Omarchy](https://omarchy.org), as a shell plugin.
 
+![Mission Control showing six desktop thumbnails across the top and the current desktop's window shrunk out beneath them](preview.png)
+
 A strip of live desktop thumbnails across the top, and underneath it the current
 desktop's windows shrunk out so none overlaps, each with its app icon and title.
 Click a window to jump to it, click a desktop to switch to it.
