@@ -39,6 +39,21 @@ For the legacy (non-Lua) Hyprland config format, see [`install/bindings.conf`](i
 Touchpad gestures are optional and live in [`install/gestures.lua`](install/gestures.lua):
 three- or four-finger swipe up to open, swipe down to close.
 
+## Removal
+
+```bash
+omarchy plugin disable io.github.andyweiboan.missioncontrol
+omarchy plugin remove  io.github.andyweiboan.missioncontrol
+```
+
+Then delete the two binds you added to `bindings.lua`, and the gestures from
+`input.lua` if you added those.
+
+The plugin writes nothing outside its own folder — no config files, no state, no
+autostart entries, nothing in `~/.local`. Removing it leaves nothing behind, and
+disabling it is enough to stop it being mounted. The keybindings are the only
+thing it asks you to change, and you make that change yourself.
+
 ## Keys
 
 | Key | Action |
@@ -55,6 +70,8 @@ Clicking a desktop thumbnail switches to it and closes. Clicking a window
 focuses it and closes.
 
 ## Requirements
+
+No external dependencies — it is QML, and everything it uses ships with Omarchy.
 
 - Omarchy with shell plugin support (`omarchy plugin list` works)
 - Hyprland — window geometry comes from its IPC, and thumbnails from
