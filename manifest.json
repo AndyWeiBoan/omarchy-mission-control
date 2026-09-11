@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.andyweiboan.missioncontrol",
+  "name": "Mission Control",
+  "version": "1.0.0",
+  "author": "Andy Wei",
+  "description": "macOS-style workspace overview: a strip of live desktop thumbnails across the top, the current desktop's windows shrunk out beneath it",
+  "kinds": ["overlay"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "MissionControl.qml"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/AndyWeiBoan/omarchy-mission-control"
+}
