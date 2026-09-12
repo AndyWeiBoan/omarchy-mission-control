@@ -214,10 +214,36 @@ Item {
     Hyprland.dispatch(Hyprland.usingLua ? luaExpr : legacy);
   }
 
+  // Everything interpolated into a dispatch is checked for SHAPE first.
+  //
+  // Under the Lua parser a dispatch string is not a command with arguments, it
+  // is an expression the compositor evaluates -- so a value carrying a quote
+  // would close the string literal it was pasted into and the rest would run as
+  // Lua. These particular values arrive from Hyprland's own IPC rather than
+  // from a client, so this is not a live hole; it is refusing to have one. The
+  // cost is two regular expressions, and the alternative is trusting that the
+  // provenance of every field stays what it is today.
+  //
+  // Refuse rather than escape. A workspace id that is not a number and an
+  // address that is not hex are not values worth salvaging.
+  function safeWorkspaceId(value) {
+    const text = String(value);
+    return /^-?[0-9]{1,10}$/.test(text) ? text : "";
+  }
+
+  function safeAddress(value) {
+    const text = String(value || "");
+    const bare = text.startsWith("0x") ? text.slice(2) : text;
+    return /^[0-9a-fA-F]{1,16}$/.test(bare) ? "0x" + bare : "";
+  }
+
   // Switching and closing are one action, but the dispatch travels over a
   // socket -- hiding in the same tick can cut it off, so give it a frame.
   function goToWorkspace(id) {
-    root.dispatch("hl.dsp.focus({ workspace = \"" + id + "\" })", "workspace " + id);
+    const target = root.safeWorkspaceId(id);
+    if (target === "")
+      return;
+    root.dispatch("hl.dsp.focus({ workspace = \"" + target + "\" })", "workspace " + target);
     hideSoon.start();
   }
 
@@ -226,7 +252,9 @@ Item {
   // Without the prefix Hyprland answers "window not found" and the click simply
   // does nothing, so normalise here rather than at each call site.
   function focusWindow(address) {
-    const addr = address.startsWith("0x") ? address : "0x" + address;
+    const addr = root.safeAddress(address);
+    if (addr === "")
+      return;
     root.dispatch("hl.dsp.focus({ window = \"address:" + addr + "\" })",
                   "focuswindow address:" + addr);
     hideSoon.start();
@@ -694,8 +722,11 @@ Item {
           if (panel.desktops[k].focused)
             i = k;
         const next = panel.desktops[(i + dir + n) % n];
-        root.dispatch("hl.dsp.focus({ workspace = \"" + next.id + "\" })",
-                      "workspace " + next.id);
+        const target = root.safeWorkspaceId(next.id);
+        if (target === "")
+          return;
+        root.dispatch("hl.dsp.focus({ workspace = \"" + target + "\" })",
+                      "workspace " + target);
       }
 
       function cycleWindow() {

@@ -212,7 +212,45 @@ where each string came from, not what it looks like.** Both bugs came from
 treating "the icon name" and "the window title" as data the shell owned, when
 both are supplied by whatever program happens to be running.
 
-Both found by the Omarchy marketplace security review, not by this project.
+### The audit, done once instead of one report at a time
+
+Two findings in a row, both the same shape, made it clear that waiting for the
+next report was not a plan. Note first what the marketplace's **automated**
+baseline actually checks: `curl-pipe-shell`, `cargo-git-unpinned`,
+`remote-git-execution-unpinned`, `sudoers-dangerous-passwordless-command`,
+`privileged-process-control-from-shared-temp`. All of them are about shell,
+install and privilege paths. **None of them look at QML.** Both findings here
+came from a human reviewer reading the code; the baseline passed each time.
+
+So there is no checklist to work through -- only the question the reviewer is
+asking. Applied to the whole file, that is: every string the plugin does not
+author itself, against every place a string makes something happen.
+
+| Untrusted input | Where it comes from | Where it goes | Guard |
+|---|---|---|---|
+| Window title | the application | `Text` | `PlainText`, capped at 128 |
+| App id / class | the application | `Text`, icon lookup | `PlainText` + capped; icon grammar, no paths |
+| Workspace name | user configuration | `Text` | `PlainText`, capped |
+| Workspace id | Hyprland IPC | Lua dispatch | must match `-?[0-9]{1,10}` |
+| Toplevel address | Hyprland IPC | Lua dispatch | must match hex, at most 16 digits |
+| Window geometry | the compositor | layout arithmetic | not a sink; guarded against `undefined` |
+| Wallpaper path | `$HOME`, fixed suffix | `Image` | not attacker-influenced |
+
+And the sinks, exhaustively: every `Text` sets `textFormat`; the only two
+`Image` sources are the fixed wallpaper and the guarded icon; the only side
+effect is `Hyprland.dispatch`. There is no `Process`, no file write, no network
+call anywhere in the plugin.
+
+**The dispatch guards were added before anyone asked for them.** Under the Lua
+parser a dispatch string is an expression the compositor evaluates, so a value
+carrying a quote would close the literal it was pasted into and the remainder
+would run as Lua. Those values come from Hyprland's own IPC rather than from a
+client, so this was not a live hole -- it is refusing to have one, for the price
+of two regular expressions. Both guards **refuse rather than escape**: a
+workspace id that is not a number is not a value worth salvaging.
+
+Both reported findings were found by the Omarchy marketplace security review,
+not by this project.
 
 ## 14. Plugin contract notes
 
