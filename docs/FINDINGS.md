@@ -302,3 +302,43 @@ switch the link pointed at `2-wreakage.jpg`; opening the overview re-resolved
 and the bound path followed.
 
 The same bug and the same fix apply to the Launchpad.
+
+## 16. A token, not a path — and a regression worth naming
+
+Section 15's fix resolved the state symlink with `readlink -f` and used the
+**resolved path** as the `Image` source. That was a regression on 1.0.0, which
+only ever used the fixed link, and it reintroduced exactly the class of problem
+section 13 is about:
+
+- `readlink` was invoked by bare name, resolving through the inherited `PATH`, so
+  a shadowed executable would be run automatically by a keep-loaded plugin.
+- The resolved path was accepted after a length slice and handed to a
+  **synchronous** `Image`. A replaced link can resolve to a FIFO, a device node
+  or an adversarial file, and **bounding a pathname does not bound what it points
+  at**.
+
+It was found in review of the sibling Launchpad plugin, where the same code had
+been copied — not here, where it shipped first. Fixing a display bug had
+quietly made the resource boundary worse than the version it replaced, which is
+the part worth remembering: *a fix is a change, and a change can regress
+something the original got right by accident or by care.*
+
+The answer is not stricter validation of the path. It is **not having a path**.
+The image is loaded through the fixed `current/background` link — the same
+pathname 1.0.0 used and the only one this plugin gives an image loader — and
+`bin/wallpaper-token` returns a short cache token (the target's size and
+basename) appended as a query, purely so the URL changes when the picture does.
+Nothing the helper prints can steer what is opened.
+
+The helper runs as an absolute `/bin/sh`, `clearEnvironment` with only `HOME`,
+under a 2s watchdog, with bounded output, and prints nothing unless the target
+is a regular file (`[ -f ]`, false for a FIFO, socket, device or directory)
+under 64 MB. No output means no token change means no reload: it fails closed.
+
+The image is also asynchronous now. The helper can check the target but cannot
+hold it — the link may be replaced between check and load, which is not
+closable from QML — so decoding off the main thread bounds the *consequence*
+instead: a late background rather than a shell that renders and stops
+answering. It is preloaded 400ms after mount to pay that cost while nobody is
+waiting, and deliberately not from `Component.onCompleted`, where preloading
+delays the shell's IPC registration past the point anything waits for it.

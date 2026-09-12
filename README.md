@@ -71,7 +71,12 @@ focuses it and closes.
 
 ## Requirements
 
-No external dependencies — it is QML, and everything it uses ships with Omarchy.
+Nothing to install — everything it uses ships with Omarchy.
+
+One external command: the bundled `bin/wallpaper-token` runs as a POSIX shell
+and uses coreutils `readlink`/`stat`/`basename` to read file metadata about
+Omarchy's `current/background` link. It prints a short cache token, never a
+path; the wallpaper is always loaded through the link itself.
 
 - Omarchy with shell plugin support (`omarchy plugin list` works)
 - Hyprland — window geometry comes from its IPC, and thumbnails from

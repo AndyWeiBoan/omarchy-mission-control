@@ -97,39 +97,77 @@ Item {
   // Omarchy keeps the active wallpaper behind a stable symlink, which is also
   // where its own background plugin reads it from. Following the link rather
   // than the theme directory means a theme switch is picked up with no reload.
-  // Resolved with `readlink -f`, not read through the symlink. The link's PATH
-  // never changes; its TARGET moves when the theme changes AND when the
-  // background changes within a theme. QtQuick caches images by URL, so a
-  // stable URL means the first wallpaper is decoded once and stays for the life
-  // of the session -- which is what the bug looked like.
+  // The wallpaper is loaded through Omarchy's state symlink -- a fixed
+  // pathname, and the ONLY one this plugin ever hands to an image loader. What
+  // changes is a cache token appended as a query, because the link's path is
+  // stable while its target moves (on a theme switch, and on a background
+  // switch within a theme) and QtQuick caches images by URL. Qt strips a query
+  // before opening a local file but keeps it in the cache key.
   //
-  // An earlier fix keyed the URL on the theme name. That covered a theme switch
-  // and missed a background switch, because `theme.name` does not change when
-  // only the picture does. The resolved path covers both, because it IS what
-  // changed.
-  //
-  // Resolved when this opens, not on a timer: the wallpaper is only on screen
-  // while this is open, so that is the only moment it has to be right. Idle
-  // costs nothing.
-  property string wallpaperPath: ""
+  // 1.0.1 resolved the link and used the RESOLVED PATH as the source. That was
+  // a regression on 1.0.0, which only ever used the fixed link: a pathname
+  // something else controls should not reach an image loader, and bounding the
+  // string does not bound what it points at -- the same mistake as the icon
+  // lookup in section 13. Found in review of the sibling Launchpad plugin,
+  // where the identical code had been copied.
+  readonly property string wallpaperLink:
+      Quickshell.env("HOME") + "/.local/state/omarchy/current/background"
+  property string wallpaperToken: ""
   readonly property string wallpaperSource:
-      root.wallpaperPath.length > 0 ? "file://" + root.wallpaperPath : ""
+      "file://" + root.wallpaperLink
+      + (root.wallpaperToken.length > 0
+         ? "?v=" + encodeURIComponent(root.wallpaperToken) : "")
+
+  readonly property string pluginDir:
+      Qt.resolvedUrl(".").toString().replace(/^file:\/\//, "").replace(/\/$/, "")
 
   function refreshWallpaper() {
-    if (!wallpaperLink.running)
-      wallpaperLink.running = true
-  }
-
-  Process {
-    id: wallpaperLink
-    command: ["readlink", "-f",
-              Quickshell.env("HOME") + "/.local/state/omarchy/current/background"]
-    stdout: StdioCollector {
-      onStreamFinished: root.wallpaperPath = String(text || "").trim().slice(0, 4096)
+    if (!wallpaperProbe.running) {
+      wallpaperProbe.running = true
+      probeWatchdog.restart()
     }
   }
 
-  Component.onCompleted: root.refreshWallpaper()
+  Process {
+    id: wallpaperProbe
+    // Absolute interpreter and a minimal environment: a bare command name is
+    // resolved through whatever PATH this process inherited, so a shadowed
+    // executable would be run automatically by a plugin mounted for the whole
+    // session.
+    command: ["/bin/sh", root.pluginDir + "/bin/wallpaper-token"]
+    clearEnvironment: true
+    environment: ({ "HOME": Quickshell.env("HOME") })
+    stdout: StdioCollector {
+      onStreamFinished: root.wallpaperToken = String(text || "").trim().slice(0, 128)
+    }
+  }
+
+  // A deadline. Nothing that runs automatically in a long-lived process should
+  // be able to hang without one, however small it is.
+  Timer {
+    id: probeWatchdog
+    interval: 2000
+    onTriggered: if (wallpaperProbe.running) wallpaperProbe.running = false
+  }
+
+  // Decoded before anyone asks, which is what keepLoaded is for. Never drawn;
+  // it exists so the overview finds the identical URL already cached.
+  //
+  // Started from a Timer, NOT Component.onCompleted: preloading during the root
+  // object's construction delays the shell's IPC registration past the point
+  // anything waits for it -- the bar renders and every command times out.
+  Image {
+    source: root.wallpaperSource
+    visible: false
+    asynchronous: true
+    cache: true
+  }
+
+  Timer {
+    running: true
+    interval: 400
+    onTriggered: root.refreshWallpaper()
+  }
 
   // --- state machine ------------------------------------------------------
 
@@ -682,7 +720,12 @@ Item {
         // then does a smooth scale on top. Matching the size on the strip
         // thumbnails so they share one cache entry did not recover it either
         // (496ms). Measured, twice.
-        asynchronous: false
+        // Asynchronous. The helper checks the target is a bounded regular file
+        // but cannot hold it -- the link can be replaced between that check and
+        // this load -- so decoding off the main thread bounds the consequence
+        // rather than the input: a late background instead of a shell that
+        // renders and stops answering.
+        asynchronous: true
         cache: true
       }
 

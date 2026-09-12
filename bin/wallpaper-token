@@ -1,0 +1,28 @@
+#!/bin/sh
+# Prints a cache token for Omarchy's current background, or nothing.
+#
+# A TOKEN, not a path. The overview loads the wallpaper through the fixed state
+# symlink, which is the only pathname it ever hands to an image loader; this
+# script's output exists solely to make the URL change when the picture behind
+# that link changes, so QtQuick's URL-keyed cache reloads. Nothing here can
+# steer what gets opened.
+#
+# Emits nothing unless the target is a bounded regular file: no output means no
+# token change, which means no reload, which is the safe direction to fail.
+
+set -eu
+
+link="${HOME:?}/.local/state/omarchy/current/background"
+
+target=$(readlink -f "$link" 2>/dev/null) || exit 0
+[ -n "$target" ] || exit 0
+
+# -f follows the link and is false for a FIFO, socket, device or directory.
+[ -f "$target" ] || exit 0
+
+size=$(stat -c %s "$target" 2>/dev/null) || exit 0
+[ "$size" -gt 0 ] || exit 0
+[ "$size" -le 67108864 ] || exit 0
+
+# Size plus name: either changes when the background does, and both are short.
+printf '%s-%s\n' "$size" "$(basename "$target")"
