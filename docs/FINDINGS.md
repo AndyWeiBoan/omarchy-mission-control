@@ -268,32 +268,37 @@ not by this project.
 ## 15. A stable URL is not a live image
 
 The wallpaper is read through `~/.local/state/omarchy/current/background`, a
-symlink whose **target** moves when the theme changes. A comment here used to
-say that following the link "means a theme switch is picked up with no reload".
+symlink whose **target** moves. A comment here used to say that following the
+link "means a theme switch is picked up with no reload". That is exactly
+backwards: following the link keeps the **path** stable, and QtQuick caches
+images by URL, so with `cache: true` the first wallpaper is decoded once and
+stays for the life of the session.
 
-That is exactly backwards. Following the link keeps the **path** stable, and
-QtQuick caches images by URL: with `cache: true` and a URL that never changes,
-the wallpaper is decoded once and the first theme's picture stays on screen for
-the life of the session. Reported by the user after switching themes.
+The caching is worth keeping -- these wallpapers are 5K and decoding one is most
+of the open -- so the URL has to change instead.
 
-The caching was deliberate and worth keeping -- Omarchy's wallpapers are 5K and
-decoding one costs ~190ms, which is most of the open. So the fix changes the
-URL rather than disabling the cache: the active theme's name is watched and
-appended as a query.
+**The first fix was wrong, and the way it was wrong is the lesson.** It watched
+`current/theme.name` and appended it to the URL as a query. That worked, and it
+was verified working: the bound value was observed going from
+`?theme=tokyo-night` to `?theme=everforest` across an `omarchy theme set`.
 
-```
-file://.../current/background?theme=everforest
-```
+It was still incomplete. The background also changes **within** a theme, and
+`theme.name` does not move when only the picture does -- so switching wallpaper
+left the old one on screen exactly as before. Verifying the case that was
+reported is not the same as verifying the behaviour.
 
-**Qt strips the query before opening a local file but keeps it in the cache
-key.** That gives one decode per theme instead of one per open. Measured, not
-assumed: an image loaded from such a URL reports `status: Ready` at
-5120x2880, and after `omarchy theme set Everforest` the bound URL was observed
-changing from `?theme=tokyo-night` to `?theme=everforest`.
+The real fix uses `readlink -f` to resolve the link to the actual file, and
+sources the image from that. No cache-busting trick is needed, because the thing
+in the URL IS the thing that changed, and it covers both causes because both
+move the same target.
 
-Two details the watch depends on, both copied from Omarchy's own `Color.qml`:
-`watchChanges: true`, and `onFileChanged: reload()` rather than reading
-directly -- **`text()` is stale inside the change signal itself**.
+**Resolved when the overview opens, not on a timer.** The wallpaper is only on
+screen while the overview is up, so that is the only moment it has to be
+correct; idle costs nothing. Omarchy's own background plugin watches
+continuously, but it has to -- it is always displaying.
 
-The same bug and the same fix apply to the Launchpad, which sources its
-wallpaper the same way.
+Measured end to end: startup resolved `1-quattro.jpg`; after a background
+switch the link pointed at `2-wreakage.jpg`; opening the overview re-resolved
+and the bound path followed.
+
+The same bug and the same fix apply to the Launchpad.
