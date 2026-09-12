@@ -32,6 +32,7 @@
 import QtQuick
 import QtQuick.Effects
 import Quickshell
+import Quickshell.Io
 import Quickshell.Wayland
 import Quickshell.Hyprland
 import qs.Commons
@@ -94,8 +95,32 @@ Item {
   // Omarchy keeps the active wallpaper behind a stable symlink, which is also
   // where its own background plugin reads it from. Following the link rather
   // than the theme directory means a theme switch is picked up with no reload.
+  // The path never changes -- `current/background` is a symlink whose TARGET
+  // moves when the theme does. That is fine for finding the file and useless
+  // for reloading it: QtQuick caches images by URL, so a stable URL means the
+  // wallpaper is decoded once and the old theme's picture stays on screen
+  // forever. (An earlier comment here claimed the opposite. It was wrong.)
+  //
+  // The theme name is appended as a query so the URL changes when the theme
+  // does. Qt strips the query before opening a local file but keeps it in the
+  // cache key, which is exactly the behaviour wanted: one decode per theme,
+  // not one per open. Verified, not assumed.
   readonly property string wallpaperSource:
       "file://" + Quickshell.env("HOME") + "/.local/state/omarchy/current/background"
+      + (root.themeStamp.length > 0 ? "?theme=" + encodeURIComponent(root.themeStamp) : "")
+
+  property string themeStamp: ""
+
+  FileView {
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/current/theme.name"
+    watchChanges: true
+    printErrors: false
+    // text() is stale inside the change signal, so both paths go through
+    // reload -> onLoaded and always parse fresh content.
+    onFileChanged: reload()
+    onLoaded: root.themeStamp = String(text()).trim().slice(0, 64)
+    onLoadFailed: root.themeStamp = ""
+  }
 
   // --- state machine ------------------------------------------------------
 

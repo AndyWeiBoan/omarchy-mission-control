@@ -264,3 +264,36 @@ not by this project.
   it has to be the intent flag from §9, not the on-screen state.
 - `keepLoaded: true` is what makes the overview open instantly; see the
   Performance section of the README for the numbers it replaces.
+
+## 15. A stable URL is not a live image
+
+The wallpaper is read through `~/.local/state/omarchy/current/background`, a
+symlink whose **target** moves when the theme changes. A comment here used to
+say that following the link "means a theme switch is picked up with no reload".
+
+That is exactly backwards. Following the link keeps the **path** stable, and
+QtQuick caches images by URL: with `cache: true` and a URL that never changes,
+the wallpaper is decoded once and the first theme's picture stays on screen for
+the life of the session. Reported by the user after switching themes.
+
+The caching was deliberate and worth keeping -- Omarchy's wallpapers are 5K and
+decoding one costs ~190ms, which is most of the open. So the fix changes the
+URL rather than disabling the cache: the active theme's name is watched and
+appended as a query.
+
+```
+file://.../current/background?theme=everforest
+```
+
+**Qt strips the query before opening a local file but keeps it in the cache
+key.** That gives one decode per theme instead of one per open. Measured, not
+assumed: an image loaded from such a URL reports `status: Ready` at
+5120x2880, and after `omarchy theme set Everforest` the bound URL was observed
+changing from `?theme=tokyo-night` to `?theme=everforest`.
+
+Two details the watch depends on, both copied from Omarchy's own `Color.qml`:
+`watchChanges: true`, and `onFileChanged: reload()` rather than reading
+directly -- **`text()` is stale inside the change signal itself**.
+
+The same bug and the same fix apply to the Launchpad, which sources its
+wallpaper the same way.
