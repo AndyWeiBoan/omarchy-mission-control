@@ -183,7 +183,36 @@ Both defences are applied where the value enters the UI:
   substitute: eliding only stops the text being *drawn*, the whole string is
   still laid out.
 
-Found by the Omarchy marketplace security review, not by this project.
+### The same class again, one function over: the app id
+
+The title was not the only attacker-chosen string. A window's **app id** is also
+picked by the client, and it was being used to build a `file://` URL:
+
+```qml
+const name = String((entry && entry.icon) || appId || "");   // falls back to the app id
+if (name.startsWith("/")) return "file://" + name;           // ...and then opens it
+```
+
+So a local application could name itself `/anything` and have the shell open
+that pathname as an image. Not merely a wrong icon: it crosses local file
+boundaries, and a FIFO that never returns or an image crafted to exhaust the
+decoder takes the whole long-lived shell process with it.
+
+The fix separates the two sources rather than sanitising one string:
+
+- **An absolute path is honoured only when it came from a desktop entry** -- a
+  local file the session installed, not something a client just made up.
+- **A raw app id is only ever an icon THEME name**, and only when it looks like
+  one: `[A-Za-z0-9][A-Za-z0-9._+-]*`, at most 128 characters, no `..`. Anything
+  else is refused outright rather than cleaned up. There is no need to salvage a
+  hostile value when a generic icon is a perfectly good answer.
+
+The general lesson, and the reason both findings landed in the same file: **ask
+where each string came from, not what it looks like.** Both bugs came from
+treating "the icon name" and "the window title" as data the shell owned, when
+both are supplied by whatever program happens to be running.
+
+Both found by the Omarchy marketplace security review, not by this project.
 
 ## 14. Plugin contract notes
 

@@ -286,15 +286,58 @@ Item {
 
   // Icon for a window, looked up from its app id. heuristicLookup copes with
   // the usual mismatches between a Wayland app id and a .desktop file name.
+  // A Wayland client chooses its own app id, so this string is attacker-chosen
+  // text arriving in a long-lived shell process. Two rules follow from that:
+  //
+  //   1. An absolute path is honoured ONLY when it came out of a desktop entry
+  //      -- a local file the session installed. An earlier version fell back to
+  //      the app id for the icon name and then turned any leading "/" into a
+  //      file:// URL, which let a client point the shell at any pathname it
+  //      liked and have it opened as an image: across local file boundaries, at
+  //      a FIFO that never returns, or at something crafted to exhaust the
+  //      decoder. The process holding that image is the whole shell.
+  //   2. A raw app id is only ever used as an icon THEME name, and only when it
+  //      looks like one. A slash, a colon, a leading dot, "..", or an
+  //      unreasonable length means it is not a theme name, so it is refused
+  //      rather than sanitised -- there is no need to salvage a hostile value
+  //      when a generic icon is a perfectly good answer.
+  //
+  // Reported by the Omarchy marketplace security review.
+  readonly property int maxIconNameLength: 128
+  readonly property int maxIconPathLength: 512
+
+  function looksLikeIconName(value) {
+    return value.length > 0
+        && value.length <= root.maxIconNameLength
+        && /^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(value)
+        && value.indexOf("..") === -1;
+  }
+
   function iconFor(appId) {
-    const entry = DesktopEntries.heuristicLookup(String(appId || ""));
-    const name = String((entry && entry.icon) || appId || "");
-    if (name.length === 0)
-      return Quickshell.iconPath("application-x-executable", true);
-    if (name.startsWith("/"))
-      return "file://" + name;
-    const themed = Quickshell.iconPath(name, true);
-    return themed.length > 0 ? themed : Quickshell.iconPath("application-x-executable", true);
+    const fallback = Quickshell.iconPath("application-x-executable", true);
+    // Bounded before it is used for anything at all, lookup included.
+    const id = String(appId || "").slice(0, root.maxIconNameLength);
+    if (id.length === 0)
+      return fallback;
+
+    const entry = DesktopEntries.heuristicLookup(id);
+    const fromEntry = String((entry && entry.icon) || "");
+    if (fromEntry.length > 0 && fromEntry.length <= root.maxIconPathLength) {
+      if (fromEntry.startsWith("/") && fromEntry.indexOf("..") === -1)
+        return "file://" + fromEntry;
+      if (root.looksLikeIconName(fromEntry)) {
+        const themed = Quickshell.iconPath(fromEntry, true);
+        if (themed.length > 0)
+          return themed;
+      }
+    }
+
+    // No entry, or nothing usable in it. The app id is all that is left, and it
+    // is untrusted: theme name only, never a path.
+    if (!root.looksLikeIconName(id))
+      return fallback;
+    const guess = Quickshell.iconPath(id, true);
+    return guess.length > 0 ? guess : fallback;
   }
 
   Variants {
