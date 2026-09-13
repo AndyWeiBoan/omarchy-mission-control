@@ -150,19 +150,6 @@ Item {
     onTriggered: if (wallpaperProbe.running) wallpaperProbe.running = false
   }
 
-  // Decoded before anyone asks, which is what keepLoaded is for. Never drawn;
-  // it exists so the overview finds the identical URL already cached.
-  //
-  // Started from a Timer, NOT Component.onCompleted: preloading during the root
-  // object's construction delays the shell's IPC registration past the point
-  // anything waits for it -- the bar renders and every command times out.
-  Image {
-    source: root.wallpaperSource
-    visible: false
-    asynchronous: true
-    cache: true
-  }
-
   Timer {
     running: true
     interval: 400
@@ -710,10 +697,6 @@ Item {
         anchors.fill: parent
         source: root.wallpaperSource
         fillMode: Image.PreserveAspectCrop
-        // Synchronous on purpose: loading async painted the contents first and
-        // blurred the background a beat later, which reads as the window
-        // opening in two steps. A local JPEG costs a few ms.
-        //
         // Do NOT add sourceSize here. Omarchy's wallpapers are 5K and the
         // obvious "decode it smaller" made the window *slower* to appear --
         // 505ms against 341ms -- because Qt still parses the whole JPEG and

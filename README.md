@@ -100,10 +100,16 @@ reload.
 
 The overview is deliberately **not** blurred — macOS does not blur the desktop
 in Mission Control either; only the Spaces strip along the top is a frosted
-band. Do not add a compositor `blur = true` layer rule for the
-`mission-control` namespace: with hyprbars installed it makes title bars flicker
-between transparent and coloured on every redraw, and
-`decoration:blur:new_optimizations = false` does not stop it.
+band.
+
+Earlier versions of this file warned against adding a compositor `blur = true`
+layer rule for the `mission-control` namespace, on the grounds that it set
+hyprbars' title bars flickering. That was wrong. The flicker is
+[hyprwm/hyprland-plugins#697](https://github.com/hyprwm/hyprland-plugins/issues/697):
+Hyprland's blurred-texture path leaves `glStencilMask` at `0x00`, so hyprbars'
+rounded-corner mask silently writes nothing and the bar is tested against the
+previous surface's discard mask. It has nothing to do with this plugin, and a
+blur rule here is harmless.
 
 ## Why not hyprexpo
 

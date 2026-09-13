@@ -339,6 +339,32 @@ The image is also asynchronous now. The helper can check the target but cannot
 hold it — the link may be replaced between check and load, which is not
 closable from QML — so decoding off the main thread bounds the *consequence*
 instead: a late background rather than a shell that renders and stops
-answering. It is preloaded 400ms after mount to pay that cost while nobody is
-waiting, and deliberately not from `Component.onCompleted`, where preloading
-delays the shell's IPC registration past the point anything waits for it.
+answering.
+
+**The hidden preload is gone (1.0.3), and it was never earning its keep.** A
+`visible: false` Image mounted with the plugin used to decode the wallpaper 400
+ms after mount, so that the overview found the URL already cached. It opened an
+unvalidated resource automatically, before any user action — the worst property
+a `keepLoaded` plugin can have — and the justification for it was a measurement
+taken when the background image was still synchronous.
+
+Re-measured after the fact with an 8 ms heartbeat injected into the QML thread,
+four cold-start runs each, timing the first open:
+
+| | worst single stall (median) | cumulative (median) |
+| --- | --- | --- |
+| with the preload | 135 ms | 314 ms |
+| without it | 142 ms | 296 ms |
+| without it, strip thumbnails async too | 128 ms | 311 ms |
+
+Indistinguishable. The ~130 ms is present in all three, so it is not the
+wallpaper decode at all — it is the rest of the open path, the per-desktop
+`ScreencopyView`s and the strip layout. Removing the preload costs nothing that
+can be measured, and the strip thumbnails were left synchronous because making
+them asynchronous bought nothing either.
+
+The lesson is the same one as section 17: a comment carrying a number is only
+as good as the code it was measured against. The `Image` had been switched to
+`asynchronous: true` for safety and the "synchronous on purpose" note above it
+was never updated, so the 341 ms it quoted had stopped being true long before
+anyone reasoned from it — including me.
