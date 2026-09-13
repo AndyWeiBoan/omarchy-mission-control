@@ -428,7 +428,12 @@ Item {
   }
 
   Variants {
-    model: Quickshell.screens
+    // Skip Quickshell's placeholder screen. When the only output drops its
+    // link (an OLED waking from DPMS re-handshakes DisplayPort), Quickshell
+    // hands out a nameless placeholder for a beat. Building a panel for it
+    // would instantiate every thumbnail below against windows that have no
+    // monitor, and Hyprland 0.56 crashes on that capture request.
+    model: Quickshell.screens.filter(s => s && s.name !== "")
 
     PanelWindow {
       id: panel
@@ -929,7 +934,14 @@ Item {
                         width: size[0] * k
                         height: size[1] * k
 
-                        captureSource: modelData.wayland
+                        // No capture source at all while hidden. ScreencopyView
+                        // requests a frame from the compositor the moment it has
+                        // a source, regardless of `live`, so a bare
+                        // `captureSource` here means every screen change (or
+                        // shell start) fires one capture per window while the
+                        // overlay is not even visible. Null tears the context
+                        // down; `shown` flipping true creates it and captures.
+                        captureSource: root.shown ? modelData.wayland : null
                         // Live, but only while shown. This plugin stays
                         // mounted, so an unconditional `live: true` would keep
                         // pulling frames of every window on every workspace
@@ -1075,7 +1087,8 @@ Item {
 
               ScreencopyView {
                 anchors.fill: parent
-                captureSource: win.modelData.wayland
+                // Null while hidden -- see the note in the Spaces strip.
+                captureSource: root.shown ? win.modelData.wayland : null
                 // Live while shown, and only while shown -- see the note in the
                 // Spaces strip. Hyprland renders a toplevel on demand for
                 // capture whether or not it is on a visible workspace, so
