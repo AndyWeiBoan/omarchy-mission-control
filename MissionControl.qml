@@ -383,6 +383,7 @@ Item {
   function reallyShow() {
     root.contentVisible = true;
     root.shown = true;
+    settleStripSoon.restart();
     // The shrink is started by the window itself, once its surface is actually
     // up -- see onBackingWindowVisibleChanged below. This is only a backstop so
     // the overview can never sit there showing full-size windows if that signal
@@ -412,6 +413,15 @@ Item {
   // then jumps; this is the one place where waiting is cheaper than correcting.
   // The re-tile moved every window, and the overview is laid out from those
   // rects. Fetching them retargets the shrink that is already running.
+  // Once the desktops are in and the strip has a width to measure.
+  Timer {
+    id: settleStripSoon
+    interval: 60
+    onTriggered: if (root.shown) root.settleAllStrips()
+  }
+
+  signal settleAllStrips()
+
   Timer {
     id: flattenSettle
     interval: 180
@@ -638,6 +648,71 @@ Item {
   // every dispatcher that takes one wants hyprctl's spelling, "0x55c058e3d1d0".
   // Without the prefix Hyprland answers "window not found" and the click simply
   // does nothing, so normalise here rather than at each call site.
+  // --- adding and removing desktops ---------------------------------------
+  // Both are runtime-only, and that is the right shape rather than a
+  // shortcoming. The user's Hyprland config is what says which desktops exist
+  // -- a `for i = 1, 5` of persistent workspace rules, typically -- so a reload
+  // returns to that, and this plugin never writes to it.
+  //
+  // What survives a reload is what has windows on it: Hyprland does not collect
+  // a workspace that is not empty. So a desktop you added and put something on
+  // stays, and one you added and left empty does not, which is what you would
+  // want either way.
+  // Ten, to match what Omarchy binds: its tiling.lua does `for workspace =
+  // 1, 10`, so SUPER+1 through SUPER+0 reach ten desktops and nothing reaches
+  // an eleventh. Hyprland itself has no limit; this is the number that has
+  // keys on it. If that loop is changed, change this with it.
+  readonly property int maxWorkspaces: 10
+
+  function addWorkspace() {
+    const taken = {};
+    const list = Hyprland.workspaces ? (Hyprland.workspaces.values || []) : [];
+    for (let i = 0; i < list.length; i++)
+      taken[list[i].id] = true;
+    for (let id = 1; id <= root.maxWorkspaces; id++) {
+      if (!taken[id]) {
+        root.setWorkspacePersistent(id, true);
+        return id;
+      }
+    }
+    return -1;
+  }
+
+  // Windows first, then the desktop. Dropping persistence on a workspace that
+  // still has something on it does nothing -- Hyprland keeps it precisely
+  // because it is not empty -- so the close button would look broken.
+  function removeWorkspace(id, windows, fallbackId, isCurrent) {
+    // Hyprland does not collect the workspace you are standing on, so step off
+    // it first -- silently, the way the arrow keys walk the strip, which moves
+    // the desktop under the overview without closing it.
+    if (isCurrent) {
+      const to = root.safeWorkspaceId(fallbackId);
+      if (to === "")
+        return;
+      root.dispatch("hl.dsp.focus({ workspace = \"" + to + "\" })",
+                    "workspace " + to);
+    }
+    for (let i = 0; i < windows.length; i++) {
+      const o = windows[i].lastIpcObject;
+      if (o && o.address)
+        root.moveWindowToWorkspace(o.address, fallbackId);
+    }
+    root.setWorkspacePersistent(id, false);
+  }
+
+  function setWorkspacePersistent(id, persistent) {
+    const ws = root.safeWorkspaceId(id);
+    if (ws === "")
+      return;
+    workspaceRule.running = false;
+    workspaceRule.command = ["hyprctl", "eval",
+                             'hl.workspace_rule({ workspace = "' + ws
+                             + '", persistent = ' + (persistent ? "true" : "false") + ' })'];
+    workspaceRule.running = true;
+  }
+
+  Process { id: workspaceRule }
+
   // Move a window to another desktop without going there.
   //
   // `follow = false` is the whole point: the plain dispatcher takes the view
@@ -928,9 +1003,22 @@ Item {
       // miniature. Fit to whichever axis runs out first -- with a dozen
       // desktops it is the width, with two it is the strip height.
       readonly property int deskCount: Math.max(1, panel.desktops.length)
-      readonly property real stripTileH: Math.min(
-          stripH - stripLabelBand - stripPad * 2,
-          ((panel.screenW * 0.92) - (deskCount - 1) * stripGap) / deskCount * (panel.screenH / panel.screenW))
+      // One size, whatever the count. The tile is as tall as the strip allows
+      // and that is the end of it.
+      //
+      // It used to also shrink to keep the row inside 92% of the screen, which
+      // was the right answer when the strip could not scroll. Now that it can,
+      // shrinking is the worse half of the trade: measured, the height limit
+      // holds up to seven desktops at 168px wide, and from the eighth the width
+      // term takes over -- 159, then 139, then 124. Three visible consequences,
+      // all of them unpleasant. The thumbnails get too small to read. The row's
+      // top edge moves down as they shrink, so everything in the strip drifts.
+      // And adding a desktop no longer shifts the row by a fixed amount, so the
+      // strip lurches by a different distance each time.
+      //
+      // Fixed size, and the row overruns the screen instead. That is what the
+      // scrolling is for.
+      readonly property real stripTileH: stripH - stripLabelBand - stripPad * 2
       readonly property real stripTileW: stripTileH * panel.screenW / panel.screenH
 
       // The exposé is NOT a grid of equal cells. macOS shrinks the whole
@@ -1025,6 +1113,37 @@ Item {
       // its position and size are needed, not merely its identity.
       property var dropCell: null
 
+      // How far the Spaces strip is scrolled from centre. Zero, and irrelevant,
+      // until there are more desktops than fit. Re-clamped when the row's length
+      // changes under it, or removing a desktop could leave it scrolled past an
+      // end that no longer exists.
+      property real stripScroll: 0
+
+      // The rest position is where the strip IS, not somewhere it slides to
+      // after an addition. It was conditional on the count having grown at
+      // first, which meant opening the overview on seven desktops left the
+      // seventh 61px from the "+" -- measured off the screen, against the 153.5
+      // the rule asks for -- because arriving at seven is not the same event as
+      // growing to it.
+      // Settled off the ROW's width, not off the desktop count.
+      //
+      // The count changes first and the row is laid out afterwards, so settling
+      // on the count computed the rest position from the width the strip still
+      // had a moment ago. Deleting desktops from ten down left the row parked
+      // 35px off centre, because the arithmetic had been done against a row
+      // that no longer existed.
+      Connections {
+        target: stripRow
+        function onWidthChanged() { panel.settleStrip(); }
+      }
+      Connections {
+        target: root
+        function onSettleAllStrips() { panel.settleStrip(); }
+      }
+      function settleStrip() {
+        panel.stripScroll = stripViewport.clampScroll(stripViewport.restScroll);
+      }
+
       // One past the highest desktop that exists. Hyprland creates a workspace
       // on demand when a window is moved to one, so this needs no setting up --
       // and computing it beats asking for "empty", which resolved to a desktop
@@ -1050,21 +1169,28 @@ Item {
       // Hit-tested by position rather than by index, so it does not care how
       // the strip is laid out or how many tiles are in it.
       function dropTargetForRect(sceneX, sceneY, w, h) {
-        const p = stripRow.mapFromItem(null, sceneX, sceneY);
+        // In the viewport's space, because the "+" is anchored to the viewport's
+        // right edge while the tiles live in a row that scrolls inside it.
+        const p = stripViewport.mapFromItem(null, sceneX, sceneY);
         let best = null, bestArea = 0;
-        for (let i = 0; i < stripRow.children.length; i++) {
-          const c = stripRow.children[i];
-          if (!c || c.deskId === undefined || c.width <= 0)
-            continue;
-          const ox = Math.min(p.x + w, c.x + c.width) - Math.max(p.x, c.x);
-          const oy = Math.min(p.y + h, c.y + c.height) - Math.max(p.y, c.y);
+        function consider(c, cx, cy) {
+          if (!c || c.deskId === undefined || c.width <= 0 || !c.visible)
+            return;
+          const ox = Math.min(p.x + w, cx + c.width) - Math.max(p.x, cx);
+          const oy = Math.min(p.y + h, cy + c.height) - Math.max(p.y, cy);
           if (ox <= 0 || oy <= 0)
-            continue;
+            return;
           if (ox * oy > bestArea) {
             bestArea = ox * oy;
             best = c;
           }
         }
+        for (let i = 0; i < stripRow.children.length; i++) {
+          const c = stripRow.children[i];
+          consider(c, stripRow.x + c.x, stripRow.y + c.y);
+        }
+        if (newDeskCell.enabled)
+          consider(newDeskCell, newDeskCell.x, newDeskCell.y);
         panel.dropCell = best;
         return best ? best.deskId : -1;
       }
@@ -1543,9 +1669,219 @@ Item {
             color: Qt.rgba(1, 1, 1, 0.12)
           }
 
+          // The strip scrolls once it is wider than the screen, which nine
+          // desktops plus the "+" tile always is: ten tiles come to about
+          // 2500px against 1512 of screen.
+          //
+          // Centred while it fits and only scrollable when it does not, so the
+          // usual four or five desktops sit in the middle of the screen exactly
+          // as they did before this existed.
+          Item {
+            id: stripViewport
+            anchors.fill: parent
+            clip: true
+
+            // The row is ALWAYS centred, and scrolling moves it either way from
+            // there. It used to be centred while it fitted and pinned to x = 0
+            // once it did not, and the switch between the two was the thing
+            // that felt wrong: measured, adding the seventh desktop moved the
+            // row 93px, the eighth 117px, and the ninth not at all, because the
+            // eighth was where the mode flipped. Centred throughout, every
+            // desktop added moves it by exactly half a tile.
+            //
+            // The row gets the whole strip. The "+" floats over it rather than
+            // taking a slice out of it: reserving room squeezed the desktops
+            // into a narrower space for the sake of a control, and at nine of
+            // them the last tile ran under the disc anyway. Over the top, the
+            // row keeps the full width and simply runs off the edges, which is
+            // what the scrolling is there for.
+            readonly property real usableW: width
+            readonly property real overflow: Math.max(0, stripRow.width - usableW)
+            // There is somewhere to scroll to when the two ends of the range
+            // are not the same place.
+            readonly property bool scrollable:
+                Math.abs(clampScroll(-99999) - clampScroll(99999)) > 1
+            readonly property real centredX: (usableW - stripRow.width) / 2
+            readonly property real plusLeft: width - newDeskCell.width
+                                             - Math.round(panel.stripGap * 1.2)
+
+            // The gap a sixth desktop happens to leave in front of the "+",
+            // taken as the rule for every desktop after it. Six is the last
+            // count that fits without scrolling, so it is the last one whose
+            // spacing nobody had to choose -- and it is the spacing this strip
+            // looks right at.
+            readonly property real restGap: {
+                const row6 = 6 * panel.stripTileW + 5 * panel.stripGap;
+                return plusLeft - ((usableW - row6) / 2 + row6);
+            }
+
+            // Where a newly added desktop wants the row to sit: far enough left
+            // that the new last tile keeps restGap in front of the "+". Never
+            // to the right of centred -- the rule is a minimum distance, not a
+            // position, so it only ever pulls the row forward.
+            readonly property real restScroll: Math.min(
+                0, plusLeft - restGap - stripRow.width - centredX)
+
+            // Scrolling by hand is NOT held to that rule. It runs from the first
+            // tile flush against the left edge to the last tile flush against
+            // the right -- under the "+", past it, wherever you want to put it.
+            // The rule is where the strip settles, not a wall.
+            //
+            // Not gated on the row overflowing, either. Seven desktops still fit
+            // on this screen and the seventh still lands 61px from the "+",
+            // which is less than half the distance the rule asks for: the rule
+            // starts mattering before the scrolling does.
+            function clampScroll(v) {
+                // Both ends stop with the same clear space: restGap in front of
+                // the "+" on the right, restGap in from the screen edge on the
+                // left. Scrolling right used to stop with the first desktop
+                // jammed flat against the edge at x = 0 while the other end
+                // kept its 153px, which is the asymmetry that reads as the
+                // first desktop not being able to get back where it was.
+                const hi = stripViewport.restGap - stripViewport.centredX;
+                const lo = Math.min(stripViewport.restScroll,
+                                    stripViewport.width - stripRow.width
+                                    - stripViewport.centredX);
+                if (lo >= hi)
+                  return lo;
+                return Math.max(lo, Math.min(hi, v));
+            }
+
+            // Two fingers, or the left button held down and dragged. Both end
+            // up here.
+            MouseArea {
+              anchors.fill: parent
+              acceptedButtons: Qt.NoButton
+              onWheel: wheel => {
+                if (!stripViewport.scrollable)
+                  return;
+                let d = wheel.pixelDelta.x || wheel.pixelDelta.y;
+                if (d === 0)
+                  d = (wheel.angleDelta.x || wheel.angleDelta.y) / 8 * 3;
+                if (d === 0)
+                  return;
+                panel.stripScroll = stripViewport.clampScroll(panel.stripScroll + d);
+                wheel.accepted = true;
+              }
+            }
+
+            // Dragging the strip's background, not a tile: a DragHandler placed
+            // here would take the press from the tiles' own tap handlers, so it
+            // is on the empty space behind them and the tiles stay clickable.
+            DragHandler {
+              id: stripDrag
+              target: null
+              enabled: stripViewport.scrollable
+              property real startScroll: 0
+              onActiveChanged: if (active) startScroll = panel.stripScroll
+              onCentroidChanged: {
+                if (!stripDrag.active)
+                  return;
+                panel.stripScroll = stripViewport.clampScroll(
+                    stripDrag.startScroll + stripDrag.activeTranslation.x);
+              }
+            }
+
+            // The "+", as macOS has it: a small grey disc at the right-hand end
+            // of the strip, not a tile of its own.
+            //
+            // It was a full-size tile with a big plus in it first, and that was
+            // wrong in a way worth naming: at tile size it reads as one more
+            // desktop that happens to be empty, which is exactly what it is not.
+            // Small, round and set apart, it reads as a control.
+            //
+            // Anchored to the RIGHT EDGE rather than trailing the last tile, so
+            // it stays put while the row scrolls under it -- and so it is in the
+            // same place whether you have two desktops or nine.
+            //
+            // It is also where a window is dropped to send it to a desktop that
+            // does not exist yet. One affordance, not two.
+            Item {
+              id: newDeskCell
+              readonly property int deskId: panel.newWorkspaceId
+              readonly property real disc: Math.round(panel.stripTileH * 0.30)
+              // Disabled, not hidden, at the ceiling. A control that vanishes
+              // when you reach a limit does not tell you there was one.
+              enabled: panel.desktops.length < root.maxWorkspaces
+              z: 10
+              anchors.right: parent.right
+              anchors.rightMargin: Math.round(panel.stripGap * 1.2)
+              // Centred on the TILES, by way of the row they live in, not on the
+              // strip. The row is vertically centred and is taller than a tile
+              // by the label band under it, so measuring from the strip's top
+              // put the disc 9px high -- and further out as the tiles changed
+              // size, which is how it was noticed.
+              y: stripRow.y + (panel.stripTileH - disc) / 2
+              width: disc
+              height: disc
+
+              Rectangle {
+                id: newDeskDisc
+                anchors.fill: parent
+                radius: width / 2
+                opacity: newDeskCell.enabled ? 1 : 0.35
+                // Light, translucent, and unoutlined. It went dark with a white
+                // hairline when it started floating over the thumbnails, for
+                // contrast, and that is what stopped it looking like a macOS
+                // control -- a dark chip with a border reads as a badge stuck
+                // onto the strip rather than as part of it.
+                //
+                // It can afford to be light again because the row now rests
+                // with a tile-and-a-half of clear frosted background in front
+                // of it. It only meets a thumbnail when the strip is dragged by
+                // hand, and losing some contrast for as long as you are holding
+                // it is a fair trade for looking right the rest of the time.
+                color: panel.dropTarget === newDeskCell.deskId ? Qt.rgba(1, 1, 1, 0.42)
+                     : newDeskHover.hovered ? Qt.rgba(1, 1, 1, 0.26)
+                                            : Qt.rgba(1, 1, 1, 0.15)
+                Behavior on color { ColorAnimation { duration: 120 } }
+                Behavior on opacity { NumberAnimation { duration: 140 } }
+
+                // Drawn rather than typed. A "+" from the menu font is a
+                // typographic plus -- short, thick, and sitting on the text
+                // baseline rather than in the middle of the disc.
+                Rectangle {
+                  anchors.centerIn: parent
+                  width: Math.round(parent.width * 0.50)
+                  height: Math.max(1, Math.round(parent.width * 0.055))
+                  radius: height / 2
+                  color: Qt.rgba(1, 1, 1, newDeskHover.hovered && newDeskCell.enabled ? 1.0 : 0.82)
+                  Behavior on color { ColorAnimation { duration: 120 } }
+                }
+                Rectangle {
+                  anchors.centerIn: parent
+                  height: Math.round(parent.width * 0.50)
+                  width: Math.max(1, Math.round(parent.width * 0.055))
+                  radius: width / 2
+                  color: Qt.rgba(1, 1, 1, newDeskHover.hovered && newDeskCell.enabled ? 1.0 : 0.82)
+                  Behavior on color { ColorAnimation { duration: 120 } }
+                }
+
+                HoverHandler { id: newDeskHover; enabled: newDeskCell.enabled }
+
+                // A MouseArea, not a TapHandler, and that is the whole reason
+                // adding a desktop used to close the overview. The backdrop
+                // dismisses on any tap it sees; a TapHandler here does not stop
+                // it seeing this one. A MouseArea takes the press outright.
+                MouseArea {
+                  anchors.fill: parent
+                  enabled: newDeskCell.enabled
+                  onClicked: root.addWorkspace()
+                }
+
+                scale: newDeskHover.hovered ? 1.12 : 1.0
+                Behavior on scale { NumberAnimation { duration: 130; easing.type: Easing.OutCubic } }
+              }
+            }
+
           Row {
             id: stripRow
-            anchors.centerIn: parent
+            anchors.verticalCenter: parent.verticalCenter
+            x: stripViewport.centredX + panel.stripScroll
+            Behavior on x {
+              enabled: !stripDrag.active
+              NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+            }
             spacing: panel.stripGap
 
             Repeater {
@@ -1708,6 +2044,93 @@ Item {
                   HoverHandler { id: deskHover }
                   TapHandler { onTapped: root.goToWorkspace(deskCell.modelData.id) }
 
+                  // Close badge, in the corner, on hover -- the macOS place for
+                  // it and the macOS timing. A permanent one on every tile
+                  // would make a row of desktops look like a row of dialogs.
+                  //
+                  // The last desktop has no badge: removing it would leave
+                  // nowhere to be, and a control that refuses is worse than one
+                  // that is not there.
+                  Rectangle {
+                    id: closeBadge
+                    visible: panel.desktops.length > 1
+                             && (deskHover.hovered || closeHover.hovered)
+                    x: Math.round(-width / 3)
+                    y: Math.round(-height / 3)
+                    // Sized off the tile, so it keeps its proportion as the
+                    // strip changes. 0.26 was too heavy against a thumbnail.
+                    width: Math.round(panel.stripTileH * 0.19)
+                    height: width
+                    radius: width / 2
+                    // White disc, grey mark. It was the other way round, which
+                    // made a grey blob with a white slash in it -- the disc read
+                    // as the symbol and the symbol as a hole.
+                    color: closeHover.hovered ? "#ffffff" : Qt.rgba(1, 1, 1, 0.92)
+                    border.width: 1
+                    border.color: Qt.rgba(0, 0, 0, 0.18)
+                    opacity: visible ? 1 : 0
+                    Behavior on color { ColorAnimation { duration: 120 } }
+
+                    // Drawn, not typed, for the same reason as the "+": the
+                    // font's own multiplication sign is not centred on its own
+                    // body, so anchors.centerIn puts it visibly off in a disc
+                    // this small.
+                    Item {
+                      anchors.centerIn: parent
+                      width: Math.round(parent.width * 0.42)
+                      height: width
+                      Rectangle {
+                        anchors.centerIn: parent
+                        width: parent.width
+                        height: Math.max(1, Math.round(closeBadge.width * 0.085))
+                        radius: height / 2
+                        rotation: 45
+                        color: closeHover.hovered ? Qt.rgba(0.25, 0.25, 0.25, 1)
+                                                  : Qt.rgba(0.42, 0.42, 0.42, 1)
+                        Behavior on color { ColorAnimation { duration: 120 } }
+                      }
+                      Rectangle {
+                        anchors.centerIn: parent
+                        width: parent.width
+                        height: Math.max(1, Math.round(closeBadge.width * 0.085))
+                        radius: height / 2
+                        rotation: -45
+                        color: closeHover.hovered ? Qt.rgba(0.25, 0.25, 0.25, 1)
+                                                  : Qt.rgba(0.42, 0.42, 0.42, 1)
+                        Behavior on color { ColorAnimation { duration: 120 } }
+                      }
+                    }
+
+                    HoverHandler { id: closeHover }
+
+                    // MouseArea, for the same reason as the "+": a TapHandler
+                    // does not stop the backdrop's dismiss handler seeing the
+                    // same tap, so closing a desktop also closed the overview.
+                    MouseArea {
+                      anchors.fill: parent
+                      // Its windows go to the nearest desktop that is staying,
+                      // rather than being closed with it. Nothing here should be
+                      // able to lose work.
+                      onClicked: {
+                        const all = panel.desktops;
+                        let fallback = -1;
+                        for (let i = 0; i < all.length; i++) {
+                          if (all[i].id === deskCell.modelData.id)
+                            continue;
+                          if (fallback < 0
+                              || Math.abs(all[i].id - deskCell.modelData.id)
+                                 < Math.abs(fallback - deskCell.modelData.id))
+                            fallback = all[i].id;
+                        }
+                        if (fallback < 0)
+                          return;
+                        root.removeWorkspace(deskCell.modelData.id,
+                                             deskCell.deskWindows, fallback,
+                                             !!deskCell.modelData.focused);
+                      }
+                    }
+                  }
+
                   // A tile being touched by a dragged window springs, rather
                   // than merely lighting up: the overshoot is the part that
                   // reads as "this one is ready to take it".
@@ -1746,59 +2169,7 @@ Item {
               }
             }
 
-            // A place to drop a window that does not belong on any desktop
-            // that exists yet.
-            //
-            // Only while something is being dragged. The strip is a row of
-            // desktops you can look at and switch to, and a permanently empty
-            // slot on the end would be neither -- it is a drop target, so it
-            // appears when there is something to drop and goes away again.
-            Item {
-              id: newDeskCell
-              readonly property int deskId: panel.newWorkspaceId
-              width: panel.dragging >= 0 ? panel.stripTileW : 0
-              height: panel.stripTileH + panel.stripLabelBand
-              opacity: panel.dragging >= 0 ? 1 : 0
-              visible: opacity > 0
-              Behavior on width { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-              Behavior on opacity { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-
-              Rectangle {
-                width: panel.stripTileW
-                height: panel.stripTileH
-                radius: Math.round(6 * panel.uiScale)
-                color: panel.dropTarget === newDeskCell.deskId ? Qt.rgba(1, 1, 1, 0.16)
-                                                               : Qt.rgba(1, 1, 1, 0.05)
-                border.width: 1
-                border.color: panel.dropTarget === newDeskCell.deskId ? Qt.rgba(1, 1, 1, 0.75)
-                                                                      : Qt.rgba(1, 1, 1, 0.22)
-                Behavior on color { ColorAnimation { duration: 120 } }
-                Behavior on border.color { ColorAnimation { duration: 120 } }
-
-                Text {
-                  anchors.centerIn: parent
-                  text: "+"
-                  font.family: root.fontFamily
-                  font.pixelSize: Math.round(panel.stripTileH * 0.34)
-                  color: Qt.rgba(1, 1, 1, 0.75)
-                }
-              }
-
-              Text {
-                y: panel.stripTileH
-                width: panel.stripTileW
-                height: panel.stripLabelBand
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-                textFormat: Text.PlainText
-                text: String(newDeskCell.deskId)
-                font.family: root.fontFamily
-                font.pixelSize: panel.stripLabelSize
-                color: Qt.rgba(1, 1, 1, 0.62)
-                style: Text.Raised
-                styleColor: Qt.rgba(0, 0, 0, 0.55)
-              }
-            }
+          }
           }
         }
 
