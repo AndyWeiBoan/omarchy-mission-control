@@ -4,9 +4,10 @@ A macOS-style workspace overview for [Omarchy](https://omarchy.org), as a shell 
 
 ![Mission Control showing six desktop thumbnails across the top and the current desktop's window shrunk out beneath them](preview.png)
 
-A strip of live desktop thumbnails across the top, and underneath it the current
-desktop's windows shrunk out so none overlaps, each with its app icon and title.
-Click a window to jump to it, click a desktop to switch to it.
+A frosted strip of live desktop thumbnails across the top, and underneath it the
+current desktop's windows shrunk out so none overlaps, each with its app icon and
+title. Click a window to jump to it, click a desktop to switch to it, or drag a
+window onto a desktop to move it there.
 
 The open is two-phase, and that is the whole point: the surface goes up with
 every window drawn at its real size and position — pixel-for-pixel the desktop
@@ -15,7 +16,10 @@ your desktop appears to shrink, rather than a different-looking screen fading in
 over it.
 
 The thumbnails are live, including windows on workspaces you cannot currently
-see.
+see. They are also complete: a screencopy of a toplevel is the client surface
+only, so the title bar and border that the compositor draws are redrawn here from
+the values Hyprland is actually using. Without that, dropping the overview made a
+bar and an outline appear on every window at once.
 
 ## Install
 
@@ -54,12 +58,16 @@ autostart entries, nothing in `~/.local`. Removing it leaves nothing behind, and
 disabling it is enough to stop it being mounted. The keybindings are the only
 thing it asks you to change, and you make that change yourself.
 
-## Keys
+The one exception is temporary and undone before you see it: on a scrolling
+workspace the plugin changes that workspace's layout while the overview is open
+and changes it back on close. See [Scrolling workspaces](#scrolling-workspaces).
+
+## Keys and mouse
 
 | Key | Action |
 | --- | --- |
 | `←` `→` | Walk the Spaces strip — switches desktop **without** closing, so you can look before you leap |
-| `↑` `↓` | Move between the windows of the current desktop |
+| `↑` `↓` | Move between the windows of the current desktop. On a single row of windows, where there is nothing above or below, they step along the row instead |
 | `Tab` | Cycle windows |
 | `1`–`9` | Jump straight to that desktop |
 | `Enter` | Open the selected window |
@@ -68,6 +76,75 @@ thing it asks you to change, and you make that change yourself.
 
 Clicking a desktop thumbnail switches to it and closes. Clicking a window
 focuses it and closes.
+
+**Dragging** a window preview picks it up and shrinks it. Held over a desktop in
+the strip it shrinks further and that tile springs — it goes in when you let go,
+not before. A `+` tile appears at the end of the strip while you drag, for a
+desktop that does not exist yet. The view stays where it is: you can move several
+windows without leaving the overview.
+
+## Scrolling workspaces
+
+Hyprland's scrolling layout puts a workspace's windows in one long row that runs
+off both edges of the screen. Thumbnails of the windows out there come up blank,
+and there is no error anywhere to say why: Hyprland does not copy a screencopy
+frame for a window whose rect does not intersect the monitor, and it skips it
+silently.
+
+So the overview takes the workspace off the accordion while it is open — scrolling
+to dwindle, which puts every window back on the monitor — and puts it back on
+close. Verified reversible across eight open/close cycles: position, size and
+column order all come back identical.
+
+This has costs, and they are visible:
+
+- Every window is resized twice, on the way in and on the way out. Terminals
+  reflow, and the thumbnails are of the reflowed windows rather than of the row
+  you left.
+- The desktop is seen to re-tile, once each way.
+- dwindle's tiling is very uneven, so the thumbnails are too.
+
+Nothing happens on a workspace whose windows all fit on the screen, which is
+every ordinary tiled desktop.
+
+## Known issues
+
+**The Spaces strip snaps into place instead of sliding.** Recorded at 60fps, its
+bottom edge goes from absent to its final position in a single frame, on every
+open. One early recording did catch an open moving over four frames and that has
+not reproduced. The durations are not the problem — the animation is not running.
+Two candidates have been eliminated: a Behavior that never saw a change (the item
+is created with the overview already expanded, so its position binding evaluates
+straight to its final value), and the one-frame delay meant to fix that. The
+remaining suspicion is that the surface only becomes visible after the animation
+has already run, which would make every measurement of it a measurement of the
+aftermath.
+
+**Dragging several windows to the same desktop does not preserve their order.**
+Where a window lands is Hyprland's insertion rule, which puts it next to the
+target desktop's *active* window — and moving without following means the window
+that arrives never becomes active, so the next one is inserted next to the same
+old reference. Measured: moving four windows in the order A B C D produced
+A C D B. Making the view follow and switching back does fix the order, and
+flickers doing it — recorded at 60fps, two frames of the target desktop, 33 ms,
+which is exactly long enough to see. There is no silent focus dispatcher to do
+it with instead; `follow = false`, `silent = true` and no argument at all were
+all measured and all switch the view.
+
+**Dragging floating windows is untested.** Tiled windows are what this has been
+exercised on.
+
+**The flatten occasionally does not trigger.** Observed once on a workspace with
+two windows fully off screen: the overview opened without flattening and their
+thumbnails were blank. This is the same class of fault as an earlier one that was
+fixed — the layout name is read from a cached IPC object that only updates on
+events nothing here subscribes to — so the fix is probably incomplete rather than
+wrong.
+
+**Thumbnails of windows on a scrolling workspace are of the flattened layout.**
+See above. There is no way to have both: a window has to be inside the monitor
+for Hyprland to produce its frames at all, and six full-size windows do not fit
+on one screen.
 
 ## Requirements
 
@@ -91,6 +168,10 @@ path; the wallpaper is always loaded through the link itself.
 
   It works without this; the strip is just less stable.
 
+hyprbars is optional. Its bar height is asked for once at load, and when it is
+not installed the answer is zero: nothing is drawn and the geometry collapses to
+what it would have been.
+
 ## Theming
 
 Labels follow the shell's menu font, so `OMARCHY_MENU_FONT` is honoured and the
@@ -98,9 +179,16 @@ plugin matches the rest of Omarchy. The background is your real wallpaper, read
 from Omarchy's `current/background` link, so a theme switch is picked up with no
 reload.
 
-The overview is deliberately **not** blurred — macOS does not blur the desktop
-in Mission Control either; only the Spaces strip along the top is a frosted
-band.
+The window decorations are drawn from live values rather than assumed ones: the
+bar's colour is the theme's `background`, which is what hyprbars is given, and
+the border's size, rounding and both colours are read from Hyprland. The active
+border happens to be the theme's accent today, and saying so in code would make
+it wrong the moment it is not.
+
+The desktop behind the overview is deliberately **not** blurred — macOS does not
+blur it in Mission Control either. Only the Spaces strip is frosted, and that
+blur is done here in QML rather than by the compositor, on the plugin's own copy
+of the wallpaper.
 
 Earlier versions of this file warned against adding a compositor `blur = true`
 layer rule for the `mission-control` namespace, on the grounds that it set
@@ -134,6 +222,10 @@ on this machine.
 
 Window captures run only while the overview is shown, so a mounted-but-hidden
 plugin costs nothing beyond the decoded wallpaper it is holding.
+
+The strip's frost is a single blurred copy of that same cached wallpaper, blurred
+once and re-positioned rather than re-blurred, so it costs nothing per frame
+either.
 
 ## Licence
 
