@@ -638,6 +638,23 @@ Item {
   // every dispatcher that takes one wants hyprctl's spelling, "0x55c058e3d1d0".
   // Without the prefix Hyprland answers "window not found" and the click simply
   // does nothing, so normalise here rather than at each call site.
+  // Move a window to another desktop without going there.
+  //
+  // `follow = false` is the whole point: the plain dispatcher takes the view
+  // with it, which would drop you on the target desktop and tear the overview
+  // down around the window you were still arranging. Measured all three
+  // spellings -- `silent = true` and `switch = false` are both accepted and
+  // both still follow.
+  function moveWindowToWorkspace(address, workspaceId) {
+    const addr = root.safeAddress(address);
+    const ws = root.safeWorkspaceId(workspaceId);
+    if (addr === "" || ws === "")
+      return;
+    root.dispatch('hl.dsp.window.move({ window = "address:' + addr
+                  + '", workspace = "' + ws + '", follow = false })',
+                  "movetoworkspacesilent " + ws + ",address:" + addr);
+  }
+
   function focusWindow(address) {
     const addr = root.safeAddress(address);
     if (addr === "")
@@ -998,6 +1015,59 @@ Item {
       // the screen width in the macOS shot.
       readonly property int iconSize: Math.max(18, Math.round(panel.screenW * 0.023))
       readonly property int titleSize: Math.max(10, Math.round(panel.screenW * 0.0085))
+
+      // --- dragging a window onto another desktop ----------------------------
+      // index into panel.windows while a drag is in flight, -1 otherwise.
+      property int dragging: -1
+      // The desktop a release right now would move it to, or -1.
+      property int dropTarget: -1
+      // The tile itself, not just its id: the dragged window is flown to it, so
+      // its position and size are needed, not merely its identity.
+      property var dropCell: null
+
+      // One past the highest desktop that exists. Hyprland creates a workspace
+      // on demand when a window is moved to one, so this needs no setting up --
+      // and computing it beats asking for "empty", which resolved to a desktop
+      // that already had windows on it when it was tried.
+      readonly property int newWorkspaceId: {
+        let top = 0;
+        for (let i = 0; i < panel.desktops.length; i++)
+          top = Math.max(top, panel.desktops[i].id);
+        return top + 1;
+      }
+
+      // Hit-tested with the dragged WINDOW's rectangle, not with the pointer.
+      //
+      // The pointer is wherever you happened to grab the thing. Grab a window
+      // near its bottom edge and its top can be well inside a desktop tile
+      // while the cursor is still hundreds of pixels below the strip -- so the
+      // window plainly overlapped the target and nothing happened. What is
+      // touching the tile is what should decide.
+      //
+      // The tile with the largest overlap wins, so a window straddling two of
+      // them goes to the one it is mostly on.
+      //
+      // Hit-tested by position rather than by index, so it does not care how
+      // the strip is laid out or how many tiles are in it.
+      function dropTargetForRect(sceneX, sceneY, w, h) {
+        const p = stripRow.mapFromItem(null, sceneX, sceneY);
+        let best = null, bestArea = 0;
+        for (let i = 0; i < stripRow.children.length; i++) {
+          const c = stripRow.children[i];
+          if (!c || c.deskId === undefined || c.width <= 0)
+            continue;
+          const ox = Math.min(p.x + w, c.x + c.width) - Math.max(p.x, c.x);
+          const oy = Math.min(p.y + h, c.y + c.height) - Math.max(p.y, c.y);
+          if (ox <= 0 || oy <= 0)
+            continue;
+          if (ox * oy > bestArea) {
+            bestArea = ox * oy;
+            best = c;
+          }
+        }
+        panel.dropCell = best;
+        return best ? best.deskId : -1;
+      }
 
       // --- selection --------------------------------------------------------
       // Index into panel.windows; -1 when the desktop is empty.
@@ -1474,6 +1544,7 @@ Item {
           }
 
           Row {
+            id: stripRow
             anchors.centerIn: parent
             spacing: panel.stripGap
 
@@ -1483,6 +1554,9 @@ Item {
               delegate: Item {
                 id: deskCell
                 required property var modelData
+                // What a drop on this tile means. Read by panel.dropTargetAt,
+                // which hit-tests the strip by position rather than by index.
+                readonly property int deskId: deskCell.modelData.id
                 width: panel.stripTileW
                 height: panel.stripTileH + panel.stripLabelBand
 
@@ -1621,11 +1695,33 @@ Item {
                     Behavior on border.color { ColorAnimation { duration: 120 } }
                   }
 
+                  // The tile a release right now would move the window to.
+                  Rectangle {
+                    anchors.fill: parent
+                    radius: parent.radius !== undefined ? parent.radius : 0
+                    visible: panel.dropTarget === deskCell.deskId
+                    color: Qt.rgba(1, 1, 1, 0.16)
+                    border.width: 2
+                    border.color: Qt.rgba(1, 1, 1, 0.85)
+                  }
+
                   HoverHandler { id: deskHover }
                   TapHandler { onTapped: root.goToWorkspace(deskCell.modelData.id) }
 
-                  scale: deskHover.hovered ? 1.03 : 1.0
-                  Behavior on scale { NumberAnimation { duration: 130; easing.type: Easing.OutCubic } }
+                  // A tile being touched by a dragged window springs, rather
+                  // than merely lighting up: the overshoot is the part that
+                  // reads as "this one is ready to take it".
+                  scale: panel.dropTarget === deskCell.deskId ? 1.12
+                       : deskHover.hovered ? 1.03
+                                           : 1.0
+                  Behavior on scale {
+                    NumberAnimation {
+                      duration: panel.dropTarget === deskCell.deskId ? 300 : 130
+                      easing.type: panel.dropTarget === deskCell.deskId ? Easing.OutBack
+                                                                       : Easing.OutCubic
+                      easing.overshoot: 2.6
+                    }
+                  }
                 }
 
                 Text {
@@ -1647,6 +1743,60 @@ Item {
                   style: Text.Raised
                   styleColor: Qt.rgba(0, 0, 0, 0.55)
                 }
+              }
+            }
+
+            // A place to drop a window that does not belong on any desktop
+            // that exists yet.
+            //
+            // Only while something is being dragged. The strip is a row of
+            // desktops you can look at and switch to, and a permanently empty
+            // slot on the end would be neither -- it is a drop target, so it
+            // appears when there is something to drop and goes away again.
+            Item {
+              id: newDeskCell
+              readonly property int deskId: panel.newWorkspaceId
+              width: panel.dragging >= 0 ? panel.stripTileW : 0
+              height: panel.stripTileH + panel.stripLabelBand
+              opacity: panel.dragging >= 0 ? 1 : 0
+              visible: opacity > 0
+              Behavior on width { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+              Behavior on opacity { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+
+              Rectangle {
+                width: panel.stripTileW
+                height: panel.stripTileH
+                radius: Math.round(6 * panel.uiScale)
+                color: panel.dropTarget === newDeskCell.deskId ? Qt.rgba(1, 1, 1, 0.16)
+                                                               : Qt.rgba(1, 1, 1, 0.05)
+                border.width: 1
+                border.color: panel.dropTarget === newDeskCell.deskId ? Qt.rgba(1, 1, 1, 0.75)
+                                                                      : Qt.rgba(1, 1, 1, 0.22)
+                Behavior on color { ColorAnimation { duration: 120 } }
+                Behavior on border.color { ColorAnimation { duration: 120 } }
+
+                Text {
+                  anchors.centerIn: parent
+                  text: "+"
+                  font.family: root.fontFamily
+                  font.pixelSize: Math.round(panel.stripTileH * 0.34)
+                  color: Qt.rgba(1, 1, 1, 0.75)
+                }
+              }
+
+              Text {
+                y: panel.stripTileH
+                width: panel.stripTileW
+                height: panel.stripLabelBand
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                textFormat: Text.PlainText
+                text: String(newDeskCell.deskId)
+                font.family: root.fontFamily
+                font.pixelSize: panel.stripLabelSize
+                color: Qt.rgba(1, 1, 1, 0.62)
+                style: Text.Raised
+                styleColor: Qt.rgba(0, 0, 0, 0.55)
               }
             }
           }
@@ -1704,8 +1854,66 @@ Item {
             readonly property real targetW: realW * panel.shrink
             readonly property real targetH: realH * panel.shrink
 
-            x: root.expanded ? targetX : realX
-            y: root.expanded ? targetY : realY
+            // The drag offset is added on top of the layout rather than
+            // replacing it, so letting go simply drops it back to zero and the
+            // window returns to wherever the overview had put it. Assigning x
+            // and y directly would break their bindings for good.
+            // Where the drag has put it. Free, it tracks the pointer with just
+            // enough smoothing to take the jitter off; over a tile, it is the
+            // offset that lands its centre on the tile's centre, and it gets a
+            // real animation so the window is seen to travel there.
+            readonly property real layoutX: root.expanded ? targetX : realX
+            readonly property real layoutY: root.expanded ? targetY : realY
+            // No animation on the position: the window tracks the pointer
+            // exactly. Smoothing it, even by 60 ms, is what made the drag feel
+            // draggy rather than smooth -- the window lagged the cursor and
+            // every change of direction showed the lag. All the softness lives
+            // in the scale, which is the only thing that should be easing.
+            readonly property real dragDX: winDrag.active ? win.freeDX : 0
+            readonly property real dragDY: winDrag.active ? win.freeDY : 0
+            Behavior on dragScale {
+              NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+            }
+            transform: Scale {
+              origin.x: win.width / 2
+              origin.y: win.height / 2
+              xScale: win.dragScale
+              yScale: win.dragScale
+            }
+            x: win.layoutX + win.dragDX
+            y: win.layoutY + win.dragDY
+            z: winDrag.active ? 10 : 0
+
+            // Picked up, the window shrinks. Held over a desktop, it shrinks
+            // further -- and that is ALL it does until the button comes up.
+            //
+            // It used to fly to the tile and take its size, which overshot the
+            // idea: the drop looked as though it had already happened, while
+            // the window was still in hand and could still be taken somewhere
+            // else. Getting smaller over a target says the same thing without
+            // claiming it is finished. The window goes in when you let go, and
+            // not before.
+            readonly property bool overTarget: winDrag.active && panel.dropCell !== null
+
+            // The size it is carried at, and the smaller size it takes over a
+            // target. The hit test uses carriedScale and never dragScale: the
+            // rectangle that decides whether we are over a tile must not itself
+            // depend on being over a tile, or the two define each other.
+            readonly property real carriedScale: 0.45
+            property real dragScale: !winDrag.active ? 1.0
+                                   : win.overTarget ? 0.16
+                                                    : win.carriedScale
+
+            // Scaled about the CENTRE, always, so that flying to a tile is a
+            // matter of putting that centre on the tile's centre. The cost is
+            // that a free drag would slide out from under the pointer as it
+            // shrinks, which the (1 - scale) term below cancels: it is the
+            // distance the grabbed point moves when the item shrinks about its
+            // middle, subtracted back out.
+            readonly property real freeDX: winDrag.activeTranslation.x
+                + (1 - win.dragScale) * (winDrag.centroid.pressPosition.x - win.width / 2)
+            readonly property real freeDY: winDrag.activeTranslation.y
+                + (1 - win.dragScale) * (winDrag.centroid.pressPosition.y - win.height / 2)
             width: root.expanded ? targetW : realW
             height: root.expanded ? targetH : realH
 
@@ -1795,6 +2003,7 @@ Item {
                 // "live" costs nothing extra beyond the frames themselves.
                 live: root.shown
                 paintCursor: false
+
               }
 
               // Selection is a ring plus a nudge in size. No fill and no dim on
@@ -1912,6 +2121,42 @@ Item {
 
             TapHandler {
               onTapped: root.focusWindow(String(win.modelData.address))
+            }
+
+            // Drag a window onto a desktop in the strip to move it there.
+            //
+            // `target: null` so the handler reports the gesture instead of
+            // moving the item itself -- the item's position is a binding on the
+            // overview's layout, and a handler that wrote to it would replace
+            // that binding permanently.
+            DragHandler {
+              id: winDrag
+              target: null
+              enabled: root.expanded
+              onActiveChanged: {
+                if (active) {
+                  panel.dragging = win.index;
+                  return;
+                }
+                const target = panel.dropTarget;
+                panel.dragging = -1;
+                panel.dropTarget = -1;
+                panel.dropCell = null;
+                if (target >= 0 && target !== (panel.currentDesktop ? panel.currentDesktop.id : -1))
+                  root.moveWindowToWorkspace(win.modelData.address, target);
+              }
+              onCentroidChanged: {
+                if (!winDrag.active)
+                  return;
+                // The carried rectangle, in scene coordinates. Scaled about
+                // the centre, so that is where it stays.
+                const vw = win.width * win.carriedScale;
+                const vh = win.height * win.carriedScale;
+                const pt = win.parent.mapToItem(null,
+                                                win.x + win.width / 2 - vw / 2,
+                                                win.y + win.height / 2 - vh / 2);
+                panel.dropTarget = panel.dropTargetForRect(pt.x, pt.y, vw, vh);
+              }
             }
           }
         }
