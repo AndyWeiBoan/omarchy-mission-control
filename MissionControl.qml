@@ -1413,8 +1413,24 @@ Item {
       // Click anywhere that is not a window or a desktop to dismiss. A
       // TapHandler, not a MouseArea: a MouseArea grabs the press outright and
       // any handler on a sibling never sees the gesture.
+      //
+      // The Spaces strip is not backdrop. A tap that lands in it and hits
+      // nothing -- the gap between two desktops, the empty run in front of the
+      // "+", the "+" itself once it is disabled -- should do nothing at all,
+      // and it was closing the overview instead, because none of those consume
+      // the tap and this handler sees everything the rest of the surface does
+      // not take.
+      //
+      // Guarded by position rather than by putting a consuming MouseArea over
+      // the strip: a MouseArea there would take the press from the drag that
+      // scrolls the strip, and scrolling by dragging would stop working.
       TapHandler {
-        onTapped: root.dismiss()
+        onTapped: eventPoint => {
+          const y = eventPoint.position.y;
+          if (y >= strip.y && y <= strip.y + strip.height)
+            return;
+          root.dismiss();
+        }
       }
 
       Item {
