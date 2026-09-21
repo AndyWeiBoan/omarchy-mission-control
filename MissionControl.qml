@@ -639,8 +639,8 @@ Item {
       }
       readonly property real monX: hyprMonitor ? hyprMonitor.x : 0
       readonly property real monY: hyprMonitor ? hyprMonitor.y : 0
-      readonly property real monW: hyprMonitor ? hyprMonitor.width / hyprMonitor.scale : panel.width
-      readonly property real monH: hyprMonitor ? hyprMonitor.height / hyprMonitor.scale : panel.height
+      readonly property real monW: hyprMonitor ? hyprMonitor.width / hyprMonitor.scale : panel.screenW
+      readonly property real monH: hyprMonitor ? hyprMonitor.height / hyprMonitor.scale : panel.screenH
 
       // --- which desktops ---------------------------------------------------
       // Only this monitor's workspaces, and only real ones: the scratchpad and
@@ -693,8 +693,28 @@ Item {
       // Proportions taken off a real Mission Control screenshot: the Spaces
       // strip is about a sixth of the screen, and the thumbnails in it about
       // two thirds of the strip, leaving room for a label underneath.
-      readonly property real uiScale: panel.width / 1920
-      readonly property real stripH: Math.round(panel.height * 0.155)
+      // Geometry comes from the SCREEN, not from the window.
+      //
+      // An unmapped PanelWindow is not the size of its screen: it collapses to
+      // Qt's 100x100 default while hidden and reports 0x0 at the instant it
+      // maps. Everything below used to be derived from panel.width/height, so
+      // every dimension changed twice per open -- and stripH is one of them.
+      //
+      // That broke the entrance, not just the numbers. The strip's resting
+      // place is `-stripH`, so as stripH went 16 -> 0 -> 146 the strip's target
+      // moved three times before the overview even opened, each move starting
+      // its Behavior. By the time `expanded` flipped 34ms later the strip was
+      // not parked above the screen at all: it was somewhere in mid-flight, at
+      // a different place every time. It then slid to 0 from wherever that was,
+      // which is why it never matched the windows shrinking beside it.
+      // Measured, three opens in a row, before this was changed.
+      //
+      // The screen does not resize when our window is hidden.
+      readonly property real screenW: panel.modelData ? panel.modelData.width : panel.width
+      readonly property real screenH: panel.modelData ? panel.modelData.height : panel.height
+
+      readonly property real uiScale: panel.screenW / 1920
+      readonly property real stripH: Math.round(panel.screenH * 0.155)
       readonly property real stripPad: Math.round(12 * uiScale)
       readonly property real stripGap: Math.round(22 * uiScale)
       readonly property int stripLabelSize: Math.max(9, Math.round(15 * uiScale))
@@ -706,8 +726,8 @@ Item {
       readonly property int deskCount: Math.max(1, panel.desktops.length)
       readonly property real stripTileH: Math.min(
           stripH - stripLabelBand - stripPad * 2,
-          ((panel.width * 0.92) - (deskCount - 1) * stripGap) / deskCount * (panel.height / panel.width))
-      readonly property real stripTileW: stripTileH * panel.width / panel.height
+          ((panel.screenW * 0.92) - (deskCount - 1) * stripGap) / deskCount * (panel.screenH / panel.screenW))
+      readonly property real stripTileW: stripTileH * panel.screenW / panel.screenH
 
       // The exposé is NOT a grid of equal cells. macOS shrinks the whole
       // desktop by one factor and leaves every window where it actually is, at
@@ -725,13 +745,13 @@ Item {
       // under the Spaces strip of ~5.8% of the screen, ~10% left at the bottom
       // (macOS keeps the dock clear down there, and so do we), and a hair of
       // side padding. On a 16:10 screen that lands the scale near 0.68.
-      readonly property real exposeGapTop: Math.round(panel.height * 0.058)
-      readonly property real exposeGapBottom: Math.round(panel.height * 0.10)
-      readonly property real exposeGapSide: Math.round(panel.width * 0.015)
+      readonly property real exposeGapTop: Math.round(panel.screenH * 0.058)
+      readonly property real exposeGapBottom: Math.round(panel.screenH * 0.10)
+      readonly property real exposeGapSide: Math.round(panel.screenW * 0.015)
       readonly property real exposeAreaX: exposeGapSide
       readonly property real exposeAreaY: stripH + exposeGapTop
-      readonly property real exposeAreaW: panel.width - exposeGapSide * 2
-      readonly property real exposeAreaH: panel.height - exposeAreaY - exposeGapBottom
+      readonly property real exposeAreaW: panel.screenW - exposeGapSide * 2
+      readonly property real exposeAreaH: panel.screenH - exposeAreaY - exposeGapBottom
 
       // Scale off the monitor's *usable* area, not the whole monitor. The bar
       // and the window gap mean a tiled window starts ~100px down; feeding the
@@ -787,8 +807,8 @@ Item {
       // Icon and title sizes come off the screen, not off the window, so every
       // label in the view is the same size -- measured at ~2.3% and ~0.85% of
       // the screen width in the macOS shot.
-      readonly property int iconSize: Math.max(18, Math.round(panel.width * 0.023))
-      readonly property int titleSize: Math.max(10, Math.round(panel.width * 0.0085))
+      readonly property int iconSize: Math.max(18, Math.round(panel.screenW * 0.023))
+      readonly property int titleSize: Math.max(10, Math.round(panel.screenW * 0.0085))
 
       // --- selection --------------------------------------------------------
       // Index into panel.windows; -1 when the desktop is empty.
@@ -1430,7 +1450,7 @@ Item {
             }
 
             Text {
-              width: Math.max(win.width, panel.width * 0.16)
+              width: Math.max(win.width, panel.screenW * 0.16)
               x: (win.width - width) / 2
               y: appIcon.y + appIcon.height + Math.round(panel.titleSize * 0.5)
               horizontalAlignment: Text.AlignHCenter
