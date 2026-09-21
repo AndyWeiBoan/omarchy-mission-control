@@ -870,9 +870,41 @@ Item {
       // thing -- makes hyprbars' title bars flicker between transparent and
       // coloured every time they redraw, and
       // decoration:blur:new_optimizations = false does not stop it.
+      // --- the bar's band is left alone -----------------------------------
+      // Nothing of ours is drawn in the strip of screen the bar reserved, so
+      // the real bar shows through: this is an Overlay layer and the bar is a
+      // Top one, and transparent pixels here composite onto it.
+      //
+      // That band was the last real discrepancy between our final frame and the
+      // desktop behind it -- measured at 32.1 on the real screen against 82.1
+      // in ours, the single biggest thing left. Painting a rectangle the bar's
+      // colour got it to within 4. Painting nothing gets it to nothing, and
+      // keeps the clock running while the overview is up.
+      //
+      // The cost is the layout: the Spaces strip can no longer sit over the
+      // bar, because the strip is barely opaque -- 7% white over our wallpaper
+      // copy -- and with no copy underneath, the bar's own icons would show
+      // through the desktop thumbnails. So the strip goes below the bar, which
+      // is where macOS puts it anyway; it does not hide the menu bar either.
+      readonly property real barBand: panel.reserved[1]
+
+      // Both pieces below draw the SAME full-panel wallpaper and clip to their
+      // own band, rather than each being fitted to its own height. Fitting them
+      // separately means two different PreserveAspectCrop results and a seam
+      // along the join -- which the Spaces strip does not hide, because the
+      // strip is only 7% white.
+      Item {
+        id: backdrop
+        y: panel.barBand
+        width: parent.width
+        height: parent.height - panel.barBand
+        clip: true
+
       Image {
         id: wallpaper
-        anchors.fill: parent
+        y: -panel.barBand
+        width: parent.width
+        height: panel.height
         source: root.wallpaperSource
         fillMode: Image.PreserveAspectCrop
         // Do NOT add sourceSize here. Omarchy's wallpapers are 5K and the
@@ -893,9 +925,55 @@ Item {
       // A whisper of dim, so the shrunken windows have something to sit
       // against. Not the heavy scrim the blurred version needed.
       Rectangle {
-        anchors.fill: parent
+        y: -panel.barBand
+        width: parent.width
+        height: panel.height
         color: "#0b0d14"
         opacity: 0.14
+      }
+      }
+
+      // --- the bar's band ---------------------------------------------------
+      // Transparent to begin with, so the real bar is simply there -- widgets,
+      // running clock and all -- and then covered as the Spaces strip comes
+      // down, on the strip's own timing. The bar does not slide out of the way
+      // and it is not hidden: it dissolves under what is arriving, and on the
+      // way out it comes back the same way.
+      //
+      // This is also what turns the last discontinuity into a fade. Our final
+      // frame used to differ from the real desktop by 50 luma in this band --
+      // the biggest thing left by a distance -- because we painted bright
+      // wallpaper where the desktop has a dark bar. Now they are the same
+      // pixels, crossfading.
+      Item {
+        id: barCover
+        width: parent.width
+        height: panel.barBand
+        clip: true
+        opacity: root.stripDeployed ? 1 : 0
+        // A fade, so it tapers in both directions -- see the vocabulary note.
+        Behavior on opacity {
+          NumberAnimation {
+            duration: root.stripDeployed ? root.stripOpenDuration
+                                         : root.stripCloseDuration
+            easing.type: Easing.OutCubic
+          }
+        }
+
+        Image {
+          width: parent.width
+          height: panel.height
+          source: root.wallpaperSource
+          fillMode: Image.PreserveAspectCrop
+          asynchronous: true
+          cache: true
+        }
+        Rectangle {
+          width: parent.width
+          height: panel.height
+          color: "#0b0d14"
+          opacity: 0.14
+        }
       }
 
       // Click anywhere that is not a window or a desktop to dismiss. A
