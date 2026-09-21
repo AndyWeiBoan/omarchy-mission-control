@@ -1992,6 +1992,7 @@ Item {
               }
 
               ScreencopyView {
+                id: shotView
                 y: fauxBar.visible ? shot.barPx : 0
                 width: parent.width
                 height: parent.height - y
@@ -2004,6 +2005,31 @@ Item {
                 live: root.shown
                 paintCursor: false
 
+                // Re-request the capture whenever the window changes size.
+                //
+                // Moving a window off a desktop re-tiles what is left, and the
+                // survivors' thumbnails kept the shape they had before: the
+                // card grew to the new rect while the picture in it stayed the
+                // old one's aspect, so it sat letterboxed inside its own frame
+                // with wallpaper showing through the gap. It did not settle --
+                // still wrong two seconds later.
+                //
+                // Hyprland does watch for this: the session listens on the
+                // window's resize event and recalculates its constraints. What
+                // does not happen is the running capture picking the new size
+                // up, so it has to be asked again. Dropping captureSource and
+                // putting it back on the next turn of the event loop is how you
+                // ask.
+                readonly property string sizeKey: win.realW + "x" + win.realH
+                onSizeKeyChanged: if (root.shown) reCapture.restart()
+                Timer {
+                  id: reCapture
+                  interval: 0
+                  onTriggered: {
+                    shotView.captureSource = null;
+                    shotView.captureSource = root.shown ? win.modelData.wayland : null;
+                  }
+                }
               }
 
               // Selection is a ring plus a nudge in size. No fill and no dim on
