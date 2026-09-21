@@ -1110,8 +1110,84 @@ Item {
               easing.type: Easing.OutCubic
             }
           }
+          // Frosted, not merely tinted. 7% white over a sharp wallpaper is a
+          // wash; macOS's Spaces strip is glass, and the give-away is that the
+          // thumbnails in it sit against something softer than the desktop
+          // below. So the fill moves off the Rectangle and becomes two layers:
+          // a blurred copy of the wallpaper, then the same 7% white over it.
+          color: "transparent"
+
+          // The blur is done HERE, on our own copy of the wallpaper. NOT by the
+          // compositor: a `blur = true` layer rule, and equally Quickshell's
+          // BackgroundEffect, makes hyprbars' title bars flicker between
+          // transparent and coloured every time they redraw -- see the note on
+          // the background for the full story.
+          Item {
+            anchors.fill: parent
+            clip: true
+
+            Image {
+              // Screen-anchored, not strip-anchored. `-strip.y` cancels the
+              // strip's own slide, so what shows through the band is the piece
+              // of wallpaper actually behind it. Bound to the strip instead,
+              // the frost would travel with it and read as a picture sliding
+              // in rather than as glass moving across a still background.
+              y: -strip.y - bleed
+              // Same framing as the background image and the bar cover: the
+              // whole panel, cropped once. Fitting this to the band instead
+              // would be a different PreserveAspectCrop result and the frost
+              // would not line up with the sharp wallpaper it meets at the
+              // strip's lower edge.
+              height: panel.height + bleed * 2
+              source: root.wallpaperSource
+              fillMode: Image.PreserveAspectCrop
+              // Same source and same (absent) sourceSize as the background, so
+              // this is a cache hit rather than a second 5K decode.
+              asynchronous: true
+              cache: true
+
+              // The layer is on the IMAGE, whose content never changes, so the
+              // blur is rendered once and merely re-positioned while the strip
+              // moves. On the clipping Item above it instead, it would re-blur
+              // every frame of the slide.
+              //
+              // `bleed` is why this image is drawn larger than the area it
+              // covers. MultiEffect samples past the edges of what it blurs,
+              // and the top edge of this layer is the top edge of the SCREEN --
+              // so the blur ran out of pixels exactly there and the first rows
+              // of the band came back barely blurred at all. Measured over a
+              // thumbnail-free column: high-frequency sd 6.16 in the top 20
+              // physical pixels and 3.85 in the next 20, against 1.2-1.5
+              // through the rest of the band. On screen that is the strip going
+              // thin and see-through right where it meets the top of the
+              // display.
+              //
+              // Growing the source by more than blurMax on every side moves
+              // those edges off screen, so every row of the band is blurred by
+              // the same full kernel. The content is then scaled ~12% larger
+              // than the sharp wallpaper it sits over and no longer lines up
+              // with it -- which is free, because it is blurred past the point
+              // where anything could line up.
+              //
+              // Downsampling the layer instead (layer.textureSize) also fixes
+              // the edge, and was tried: uniform, cheaper, and visibly blocky.
+              // An upscale that large shows its bilinear facets.
+              readonly property int bleed: 96
+              x: -bleed
+              width: strip.width + bleed * 2
+              layer.enabled: true
+              layer.effect: MultiEffect {
+                blurEnabled: true
+                blur: 1.0
+                blurMax: 64
+              }
+            }
           }
-          color: Qt.rgba(1, 1, 1, 0.07)
+
+          Rectangle {
+            anchors.fill: parent
+            color: Qt.rgba(1, 1, 1, 0.07)
+          }
 
           Rectangle {
             anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
