@@ -2,7 +2,7 @@
 
 A macOS-style workspace overview for [Omarchy](https://omarchy.org), as a shell plugin.
 
-![Mission Control: a frosted strip of five desktop thumbnails across the top, the third hovered and showing its close badge, a grey + at the right-hand end, and the current desktop's window shrunk out beneath](preview.png)
+![Mission Control: a frosted strip of five desktop thumbnails across the top, the third hovered and showing its close badge, a grey + at the right-hand end, and the current desktop's window shrunk out beneath](screenshot.png)
 
 A frosted strip of live desktop thumbnails across the top, and underneath it the
 current desktop's windows shrunk out so none overlaps, each with its app icon and
