@@ -836,11 +836,17 @@ Item {
         const from = panel.centreOf(panel.windows[panel.selected]);
         let best = -1;
         let bestCost = Infinity;
+        // Did any window lie along this axis at all, in either direction? A
+        // whole pixel of tolerance, so windows that merely round differently
+        // do not count as being above one another.
+        let axisLive = false;
         for (let i = 0; i < n; i++) {
           if (i === panel.selected)
             continue;
           const to = panel.centreOf(panel.windows[i]);
           const along = (to.x - from.x) * dx + (to.y - from.y) * dy;
+          if (Math.abs(along) > 1)
+            axisLive = true;
           if (along <= 0)
             continue;
           const across = Math.abs((to.x - from.x) * dy) + Math.abs((to.y - from.y) * dx);
@@ -850,9 +856,52 @@ Item {
             best = i;
           }
         }
-        // Nothing that way: stay put rather than jumping to the far side.
-        if (best >= 0)
+        if (best >= 0) {
           panel.selected = best;
+          return;
+        }
+        // Nothing that way. Two different situations, and they want different
+        // answers:
+        //
+        //   The axis is live and we are at the end of it -- something IS above
+        //   us, we are just the bottom row. Stay put rather than jumping to the
+        //   far side, which is what this always did.
+        //
+        //   The axis is dead: no window lies either way along it. A scrolling
+        //   workspace is one long row, so every window shares a y and up/down
+        //   never has anywhere to go -- the keyboard could not move the
+        //   selection at all, only Tab could. Step along the row instead.
+        if (axisLive)
+          return;
+        panel.stepInOrder(dy !== 0 ? dy : dx);
+      }
+
+      // Windows left to right, top to bottom. Only used when the arrow keys
+      // are pressed along a dead axis, so the order is a fallback, not the
+      // navigation model -- see move().
+      function orderedIndices() {
+        const out = [];
+        for (let i = 0; i < panel.windows.length; i++)
+          out.push(i);
+        out.sort((a, b) => {
+          const ca = panel.centreOf(panel.windows[a]);
+          const cb = panel.centreOf(panel.windows[b]);
+          return (ca.x - cb.x) || (ca.y - cb.y);
+        });
+        return out;
+      }
+
+      // One step, and it stops at the ends: the no-wrap rule in move() applies
+      // here too, so holding the key down does not loop the row.
+      function stepInOrder(dir) {
+        const order = panel.orderedIndices();
+        const at = order.indexOf(panel.selected);
+        if (at < 0)
+          return;
+        const next = at + (dir > 0 ? 1 : -1);
+        if (next < 0 || next >= order.length)
+          return;
+        panel.selected = order[next];
       }
 
       // --- background -------------------------------------------------------
@@ -1052,7 +1101,9 @@ Item {
       }
 
       // Landing on another desktop starts its selection over; without this the
-      // index left over from the previous desktop points at nothing.
+      // index left over from the previous desktop points at nothing. Index 0 is
+      // Hyprland's focused window -- panel.windows is sorted by focusHistoryID
+      // -- so the selection opens on the window you just left.
       onWindowsChanged: panel.selected = panel.windows.length > 0 ? 0 : -1
 
       function activateSelection() {
