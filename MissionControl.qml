@@ -355,6 +355,50 @@ Item {
 
   // Everything the open does once the desktop underneath is settled. Split out
   // of setShown because a flattened workspace reaches it one timer later.
+  function reallyShow() {
+    root.contentVisible = true;
+    root.shown = true;
+    // The shrink is started by the window itself, once its surface is actually
+    // up -- see onBackingWindowVisibleChanged below. This is only a backstop so
+    // the overview can never sit there showing full-size windows if that signal
+    // does not arrive.
+    expandFallback.start();
+  }
+
+  // Long enough for three socket round trips to land. This plugin stays
+  // mounted, possibly idle for hours, and a window moved or resized while we
+  // held no interest in it leaves lastIpcObject stale -- every thumbnail's
+  // position and size is computed from that, so a stale rect puts windows in
+  // visibly wrong places, and a stale layout name picks the wrong overview
+  // entirely.
+  Timer {
+    id: decideThenFlatten
+    interval: 70
+    onTriggered: {
+      if (!root.opened)
+        return;
+      if (root.flattenIfNeeded())
+        flattenSettle.restart();
+    }
+  }
+
+  // Long enough for Hyprland to re-tile and for the new rects to be worth
+  // asking for. Shorter and the overview opens on the accordion's geometry and
+  // then jumps; this is the one place where waiting is cheaper than correcting.
+  // The re-tile moved every window, and the overview is laid out from those
+  // rects. Fetching them retargets the shrink that is already running.
+  Timer {
+    id: flattenSettle
+    interval: 180
+    onTriggered: {
+      if (!root.opened) {
+        // Closed again inside the window. Put the layout back and stay down.
+        root.restoreWorkspaceLayout();
+        return;
+      }
+      Hyprland.refreshToplevels();
+    }
+  }
 
   function setShown(next) {
     root.opened = next;
@@ -372,35 +416,62 @@ Item {
     } else if (!root.shown) {
       // Already hidden. Still clear `expanded`, so that a state left
       // inconsistent by anything at all heals on the next close rather than
-      // wedging the toggle.
+      // wedging the toggle -- and still put the layout back, for the same
+      // reason: whatever got us here, the workspace is not ours to keep.
       root.expanded = false;
+      root.restoreWorkspaceLayout();
       return;
     }
     if (next) {
-      // This plugin stays mounted, possibly idle for hours. Hyprland's model is
-      // event-driven, but a window that was moved or resized while we held no
-      // interest in it can leave lastIpcObject stale -- and every thumbnail's
-      // position and size is computed from that, so a stale rect puts windows
-      // in visibly wrong places. Ask for the current state before showing.
+      // Ask Hyprland what is actually true, THEN decide.
       //
-      // Three round trips on the Hyprland socket, all before the first frame.
-      // Cheap enough to keep in the critical path, and the alternative --
-      // showing first and correcting after -- would move windows under the
-      // pointer.
+      // This used to read the cached IPC objects directly and it got the first
+      // open of every session wrong: `tiledLayout` only changes on a config
+      // event, which nothing here subscribes to, so the cached value was
+      // whatever it had been when the plugin loaded. The first open saw
+      // "dwindle" on a scrolling workspace and skipped the flatten; the second
+      // open saw the value the first open's refresh had fetched and worked.
+      // Two opens in a row therefore did different things, which is the one
+      // behaviour an overview cannot have.
+      //
+      // Three round trips on the Hyprland socket, and now we wait for them
+      // rather than reading through them. The plugin already accepted their
+      // cost in the critical path; what it did not do was let them land.
       Hyprland.refreshMonitors();
       Hyprland.refreshWorkspaces();
       Hyprland.refreshToplevels();
-      root.contentVisible = true;
-      root.shown = true;
-      // The shrink is started by the window itself, once its surface is
-      // actually up -- see onBackingWindowVisibleChanged below. This is only a
-      // backstop so the overview can never sit there showing full-size windows
-      // if that signal does not arrive.
-      expandFallback.start();
-    } else {
+      // Show NOW, on the geometry we already have, and flatten underneath the
+      // animation rather than in front of it.
+      //
+      // Waiting for the re-tile first gave two separate motions: the desktop
+      // visibly rearranged, and only then did the overview open. Two animations
+      // in a row where the eye expects one reads as a stutter, and it also
+      // throws away this plugin's whole opening trick -- the first frame is
+      // supposed to be the desktop you were already looking at.
+      //
+      // So the surface goes up on the accordion's own rects, which IS that
+      // desktop, and the flatten lands a few frames later while the windows are
+      // already shrinking. Their targets move once, mid-flight, and the
+      // Behaviors carry them there: one motion that settles, instead of two
+      // that queue.
+      root.reallyShow();
+      decideThenFlatten.restart();
+      return;
+    }
+    {
       // Reverse of the open: shrink back out to the real desktop, then drop the
       // surface once the windows are home. Dropping it first would cut the
       // animation off and read as a flicker.
+      //
+      // The accordion comes back HERE, at the start of the close, for the same
+      // reason it was not restored before the open: so there is one motion
+      // rather than two. The windows animate out to where the accordion is
+      // putting them -- most of them off the edge of the screen, which is
+      // exactly where they are -- and by the time the surface drops the desktop
+      // underneath already matches. Restoring after the drop instead left the
+      // desktop rearranging itself in full view, a beat after the overview had
+      // gone.
+      root.restoreWorkspaceLayout();
       root.expanded = false;
       expandFallback.stop();
       fadeOutSoon.restart();
@@ -418,6 +489,89 @@ Item {
   //
   // (`hl.dsp.workspace` exists but is a table of workspace *management* verbs --
   // rename, move to monitor, toggle_special. Merely going to one is a focus.)
+  // --- flattening a scrolling workspace -------------------------------------
+  // Hyprland does not copy a screencopy frame for a window whose rect does not
+  // intersect the monitor -- see CScreenshareManager::onOutputCommit -- and in
+  // a scrolling workspace most of the row is off screen, so most thumbnails
+  // arrive empty. There is no error anywhere to say why: no `ready`, no
+  // `failed`, nothing in either log.
+  //
+  // So the overview flattens the workspace before it opens. scrolling ->
+  // dwindle puts every window back onto the monitor, which is the only thing
+  // Hyprland needs to start producing their frames, and closing puts it back.
+  //
+  // MEASURED, because the whole idea rests on it: position, size AND column
+  // order all come back identical, across four consecutive round trips.
+  // `fit all` is NOT a substitute -- it also brings the row on screen, but a
+  // layout round trip after it reorders the columns.
+  //
+  // The cost is real and visible: dwindle tiles the row into very uneven
+  // rectangles (measured 175x185 next to 730x861), so every terminal reflows
+  // on the way in and back on the way out, and the thumbnails are of those
+  // reflowed windows rather than of the row you left.
+  property string flattenedWorkspace: ""
+  Process { id: layoutSwap }
+
+  function setWorkspaceLayout(id, layout) {
+    const safe = root.safeWorkspaceId(id);
+    if (safe === "")
+      return;
+    layoutSwap.running = false;
+    layoutSwap.command = ["hyprctl", "eval",
+                          'hl.workspace_rule({ workspace = "' + safe
+                          + '", layout = "' + layout + '" })'];
+    layoutSwap.running = true;
+  }
+
+  // True when the workspace is scrolling AND something on it is entirely off
+  // the monitor. Both halves matter: a scrolling workspace whose row happens
+  // to fit needs nothing done to it, and no other layout can put a window
+  // outside the monitor in the first place.
+  function flattenIfNeeded() {
+    if (root.flattenedWorkspace !== "")
+      return false;
+    const ws = Hyprland.focusedWorkspace;
+    const o = ws ? ws.lastIpcObject : null;
+    if (!o || o.tiledLayout !== "scrolling")
+      return false;
+    const mon = Hyprland.focusedMonitor;
+    const m = mon ? mon.lastIpcObject : null;
+    if (!m || !m.scale)
+      return false;
+    const mx = m.x, my = m.y;
+    const mw = m.width / m.scale, mh = m.height / m.scale;
+    const tls = ws.toplevels ? (ws.toplevels.values || []) : [];
+    let offscreen = false;
+    for (let i = 0; i < tls.length; i++) {
+      const w = tls[i].lastIpcObject;
+      if (!w || !w.at || !w.size || w.mapped === false)
+        continue;
+      if (w.at[0] + w.size[0] <= mx || w.at[0] >= mx + mw
+          || w.at[1] + w.size[1] <= my || w.at[1] >= my + mh) {
+        offscreen = true;
+        break;
+      }
+    }
+    if (!offscreen)
+      return false;
+    root.flattenedWorkspace = root.safeWorkspaceId(ws.id);
+    if (root.flattenedWorkspace === "")
+      return false;
+    root.setWorkspaceLayout(root.flattenedWorkspace, "dwindle");
+    return true;
+  }
+
+  function restoreWorkspaceLayout() {
+    if (root.flattenedWorkspace === "")
+      return;
+    root.setWorkspaceLayout(root.flattenedWorkspace, "scrolling");
+    root.flattenedWorkspace = "";
+  }
+
+  // Belt and braces. Leaving somebody's workspace on the wrong layout because
+  // the shell was restarted mid-overview is not an acceptable failure mode.
+  Component.onDestruction: root.restoreWorkspaceLayout()
+
   function dispatch(luaExpr, legacy) {
     Hyprland.dispatch(Hyprland.usingLua ? luaExpr : legacy);
   }
@@ -490,8 +644,16 @@ Item {
 
   Timer {
     id: collapseThenHide
-    onTriggered: if (!root.opened) root.shown = false
     interval: root.closeDuration - 60 + root.fadeDuration
+    onTriggered: {
+      if (root.opened)
+        return;
+      root.shown = false;
+      // Belt and braces: the close path above restores it, but any route that
+      // reaches here without having done so must not leave the workspace on
+      // the wrong layout.
+      root.restoreWorkspaceLayout();
+    }
   }
 
   Timer {
@@ -769,7 +931,9 @@ Item {
       readonly property real usableW: Math.max(1, panel.monW - reserved[0] - reserved[2])
       readonly property real usableH: Math.max(1, panel.monH - reserved[1] - reserved[3])
 
-      // The one scale every window shares.
+      // The one scale every window shares. It assumes the desktop fits on the
+      // screen, which is what flattening a scrolling workspace is for -- see
+      // flattenIfNeeded.
       readonly property real shrink: Math.min(exposeAreaW / usableW, exposeAreaH / usableH)
 
       // Where the scaled desktop is pinned. Anchoring on the *windows* rather
