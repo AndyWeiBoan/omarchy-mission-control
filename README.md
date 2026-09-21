@@ -2,12 +2,16 @@
 
 A macOS-style workspace overview for [Omarchy](https://omarchy.org), as a shell plugin.
 
-![Mission Control showing six desktop thumbnails across the top and the current desktop's window shrunk out beneath them](preview.png)
+![Mission Control: a frosted strip of five desktop thumbnails across the top, the third hovered and showing its close badge, a grey + at the right-hand end, and the current desktop's window shrunk out beneath](preview.png)
 
 A frosted strip of live desktop thumbnails across the top, and underneath it the
 current desktop's windows shrunk out so none overlaps, each with its app icon and
-title. Click a window to jump to it, click a desktop to switch to it, or drag a
-window onto a desktop to move it there.
+title.
+
+- Click a window to jump to it, or a desktop to switch to it.
+- **Drag** a window onto a desktop to move it there.
+- **Add** a desktop with the `+` at the right-hand end, **remove** one with the
+  close badge that appears when you hover it.
 
 The open is two-phase, and that is the whole point: the surface goes up with
 every window drawn at its real size and position — pixel-for-pixel the desktop
@@ -58,9 +62,11 @@ autostart entries, nothing in `~/.local`. Removing it leaves nothing behind, and
 disabling it is enough to stop it being mounted. The keybindings are the only
 thing it asks you to change, and you make that change yourself.
 
-The one exception is temporary and undone before you see it: on a scrolling
-workspace the plugin changes that workspace's layout while the overview is open
-and changes it back on close. See [Scrolling workspaces](#scrolling-workspaces).
+Two things it does change, both at runtime only and both undone: a scrolling
+workspace's layout while the overview is open (see
+[Scrolling workspaces](#scrolling-workspaces)), and the persistence of any
+desktop you add or remove (see [Desktops](#desktops)). Neither touches your
+config, so `hyprctl reload` restores whatever that says.
 
 ## Keys and mouse
 
@@ -75,13 +81,41 @@ and changes it back on close. See [Scrolling workspaces](#scrolling-workspaces).
 | `CTRL`+`↓` / `CTRL`+`↑` | Close (mirrors whatever opened it) |
 
 Clicking a desktop thumbnail switches to it and closes. Clicking a window
-focuses it and closes.
+focuses it and closes. Clicking anywhere in the strip that is not a desktop does
+nothing — the strip is not backdrop.
 
-**Dragging** a window preview picks it up and shrinks it. Held over a desktop in
-the strip it shrinks further and that tile springs — it goes in when you let go,
-not before. A `+` tile appears at the end of the strip while you drag, for a
-desktop that does not exist yet. The view stays where it is: you can move several
-windows without leaving the overview.
+**Dragging** a window preview picks it up and shrinks it. Held over a desktop it
+shrinks further and that desktop springs — it goes in when you let go, not
+before. The `+` at the end takes a drop too, for a desktop that does not exist
+yet. The view stays where it is, so you can move several windows without leaving
+the overview.
+
+## Desktops
+
+The `+` at the right-hand end adds one; the badge in a desktop's corner, which
+appears when you hover it, removes that one. A removed desktop's windows are
+moved to the nearest desktop that is staying — nothing here closes a window.
+
+Ten is the ceiling, because ten is what Omarchy binds: its `tiling.lua` does
+`for workspace = 1, 10`, so `SUPER`+`1` through `SUPER`+`0` reach ten desktops
+and nothing reaches an eleventh. At ten the `+` greys out rather than
+disappearing. Hyprland itself has no limit; if you change that loop, change
+`maxWorkspaces` with it.
+
+Both are runtime-only, and that is the right shape rather than a shortcoming.
+Your Hyprland config is what says which desktops exist — a `for i = 1, 5` of
+persistent workspace rules, typically — so a reload returns to that, and this
+plugin never writes to it. What survives a reload is what has windows on it:
+Hyprland does not collect a workspace that is not empty. So a desktop you added
+and put something on stays, and one you added and left empty does not.
+
+The strip scrolls once there are more desktops than fit, by two-finger swipe or
+by dragging its background. It settles with the last desktop the same distance
+from the `+` as the sixth desktop has — six being the last count that fits
+without scrolling, and so the last spacing nobody had to choose. Scrolling by
+hand is not held to that: it runs from the first desktop against the left margin
+to the last against the right, under the `+` and past it, wherever you want to
+put it.
 
 ## Scrolling workspaces
 
@@ -130,6 +164,11 @@ flickers doing it — recorded at 60fps, two frames of the target desktop, 33 ms
 which is exactly long enough to see. There is no silent focus dispatcher to do
 it with instead; `follow = false`, `silent = true` and no argument at all were
 all measured and all switch the view.
+
+**Removing a desktop can take a moment to show.** Dropping a workspace's
+persistence is not always acted on immediately — measured once as needing a
+second request before the workspace disappeared — so the strip may keep the
+desktop for a beat after the badge is clicked.
 
 **Dragging floating windows is untested.** Tiled windows are what this has been
 exercised on.
@@ -184,6 +223,10 @@ bar's colour is the theme's `background`, which is what hyprbars is given, and
 the border's size, rounding and both colours are read from Hyprland. The active
 border happens to be the theme's accent today, and saying so in code would make
 it wrong the moment it is not.
+
+The `+` and the close badge are drawn rather than typed. A `+` or `×` from the
+menu font is a typographic glyph — short, thick, and sitting on the text baseline
+rather than in the middle of the disc it is supposed to be centred in.
 
 The desktop behind the overview is deliberately **not** blurred — macOS does not
 blur it in Mission Control either. Only the Spaces strip is frosted, and that
