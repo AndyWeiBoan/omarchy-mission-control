@@ -212,6 +212,92 @@ Item {
   // next open still starts from above the screen edge.
   onShownChanged: if (!root.shown) root.stripDeployed = false
 
+  // --- hyprbars ------------------------------------------------------------
+  // A screencopy of a toplevel is the CLIENT surface, and hyprbars' title bar
+  // is a compositor-side decoration -- so every thumbnail here arrived without
+  // one. That is not just a missing detail in the overview: it is the flash on
+  // the way out. Our last frame has no title bars, the real desktop does, so
+  // the moment the surface is dropped a bar appears on every window at once.
+  //
+  // Drawn rather than captured, then, and from the same numbers Hyprland is
+  // using. The height is asked for once at load; the colour is the theme's
+  // `background`, which is literally what hyprbars.lua sets bar_color to, so
+  // it follows a theme change for free.
+  //
+  // Zero when hyprbars is not installed, which is also the right answer: the
+  // probe fails, nothing is drawn, and the geometry below collapses to what it
+  // was before.
+  property int hyprbarsHeight: 0
+
+  // --- the rest of what a window looks like ---------------------------------
+  // The border was the other half of the flash, and the bigger half by the
+  // numbers. Comparing our last frame against the real desktop, region by
+  // region: the strip of screen where a window's left border runs measured 74.3
+  // on the real desktop and 31.6 in ours. Hyprland draws a 2px accent border
+  // around every window and a screencopy of the client surface contains no such
+  // thing, so at the moment the surface was dropped a bright outline appeared
+  // around every window at once.
+  //
+  // Read rather than assumed, because all four of these are things the user
+  // changes: the active colour happens to be the theme's accent today, but
+  // saying so in code would make this wrong the moment it is not.
+  property int hyprBorderSize: 0
+  property int hyprRounding: 0
+  property color hyprActiveBorder: Color.accent
+  property color hyprInactiveBorder: Qt.rgba(0.35, 0.35, 0.35, 0.67)
+
+  // A gradient reads back as "aarrggbb <angle>deg"; we want the first stop.
+  function firstGradientStop(text, fallback) {
+    const m = String(text || "").match(/([0-9a-fA-F]{8})/);
+    if (!m)
+      return fallback;
+    const v = parseInt(m[1], 16);
+    return Qt.rgba(((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255,
+                   (v & 255) / 255, ((v >> 24) & 255) / 255);
+  }
+
+  Process {
+    id: hyprLookProbe
+    running: true
+    // One process for the lot. Each getoption answers with its own JSON object,
+    // so the reply is a stream of them rather than an array.
+    command: ["hyprctl", "-j", "--batch",
+              "getoption plugin:hyprbars:bar_height;"
+              + "getoption general:border_size;"
+              + "getoption decoration:rounding;"
+              + "getoption general:col.active_border;"
+              + "getoption general:col.inactive_border"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        const seen = {};
+        const re = /\{[^{}]*\}/g;
+        let m;
+        while ((m = re.exec(text)) !== null) {
+          try {
+            const o = JSON.parse(m[0]);
+            if (o && o.option)
+              seen[o.option] = o;
+          } catch (e) { }
+        }
+        function intOf(key, max) {
+          const o = seen[key];
+          // `set` is false when Hyprland is echoing a default back at us, which
+          // is how an absent hyprbars announces itself.
+          return (o && o.set && o.int > 0) ? Math.min(max, o.int) : 0;
+        }
+        root.hyprbarsHeight = intOf("plugin:hyprbars:bar_height", 200);
+        root.hyprBorderSize = intOf("general:border_size", 20);
+        root.hyprRounding = intOf("decoration:rounding", 60);
+        if (seen["general:col.active_border"])
+          root.hyprActiveBorder = root.firstGradientStop(
+              seen["general:col.active_border"].gradient, root.hyprActiveBorder);
+        if (seen["general:col.inactive_border"])
+          root.hyprInactiveBorder = root.firstGradientStop(
+              seen["general:col.inactive_border"].gradient, root.hyprInactiveBorder);
+      }
+    }
+  }
+
   // --- shared motion vocabulary ---------------------------------------------
   // These numbers are not this plugin's own. They are the same ones the
   // Launchpad overlay uses, so the two read as parts of one desktop rather than
@@ -681,7 +767,11 @@ Item {
           if (!o || !o.at || !o.size)
             continue;
           x0 = Math.min(x0, o.at[0]);
-          y0 = Math.min(y0, o.at[1]);
+          // The bar sits directly above the client area, so the top of a window
+          // is that much higher than Hyprland's `at`. Without this the block is
+          // anchored on the client tops and every bar hangs above the gap the
+          // layout reserved.
+          y0 = Math.min(y0, o.at[1] - root.hyprbarsHeight);
           x1 = Math.max(x1, o.at[0] + o.size[0]);
           y1 = Math.max(y1, o.at[1] + o.size[1]);
         }
@@ -1125,6 +1215,7 @@ Item {
             // Hyprland's focus, not ours: focusHistoryID 0 is the window that
             // currently wears the active border on the real desktop, and that
             // is what has to match when the surface goes away.
+            readonly property bool isHyprFocused: !!(ipc && ipc.focusHistoryID === 0)
 
             // Two rects per window, and the animation between them is the
             // whole effect.
@@ -1148,12 +1239,16 @@ Item {
             readonly property real screenX: at[0] - panel.monX
             readonly property real screenY: at[1] - panel.monY
 
+            // The rect is the WHOLE window -- hyprbars' bar plus the client
+            // area -- so the two shrink as one object instead of the bar being
+            // a thing that appears at the end.
+            readonly property real barH: root.hyprbarsHeight
             readonly property real realX: screenX
-            readonly property real realY: screenY
+            readonly property real realY: screenY - barH
             readonly property real realW: size[0]
-            readonly property real realH: size[1]
+            readonly property real realH: size[1] + barH
             readonly property real targetX: panel.originX + screenX * panel.shrink
-            readonly property real targetY: panel.originY + screenY * panel.shrink
+            readonly property real targetY: panel.originY + (screenY - barH) * panel.shrink
             readonly property real targetW: realW * panel.shrink
             readonly property real targetH: realH * panel.shrink
 
@@ -1175,8 +1270,71 @@ Item {
               id: shot
               anchors.fill: parent
 
+              // Proportional, not absolute: the delegate is mid-animation for
+              // most of the time anyone is looking at it, and a bar with a
+              // fixed pixel height would slide against the content it is
+              // attached to all the way down.
+              readonly property real barFrac: win.realH > 0 ? win.barH / win.realH : 0
+              readonly property real barPx: shot.height * shot.barFrac
+
+              // hyprbars' own bar, redrawn. Same colour it is given in
+              // hyprbars.lua (the theme's `background`), the traffic lights in
+              // the same order and alignment, and the title where it puts it.
+              Rectangle {
+                id: fauxBar
+                visible: win.barH > 0
+                width: parent.width
+                height: shot.barPx
+                color: Color.background
+                // hyprbars has bar_precedence_over_border, so the border wraps
+                // bar and content together and only the top corners are round.
+                topLeftRadius: Math.min(height, Math.round(12 * panel.shrink))
+                topRightRadius: fauxBar.topLeftRadius
+
+                // bar_buttons_alignment = "left", bar_padding 14, button
+                // padding 9, size 12 -- all as fractions of the bar height so
+                // they ride the shrink with everything else.
+                Row {
+                  anchors.verticalCenter: parent.verticalCenter
+                  x: shot.barPx * (14 / 44)
+                  spacing: shot.barPx * (9 / 44)
+                  Repeater {
+                    model: ["#ff5f57", "#febc2e", "#28c840"]
+                    delegate: Rectangle {
+                      required property string modelData
+                      width: shot.barPx * (12 / 44)
+                      height: width
+                      radius: width / 2
+                      color: modelData
+                      anchors.verticalCenter: parent.verticalCenter
+                    }
+                  }
+                }
+
+                // bar_text_align = "center". Illegible once the desktop is
+                // shrunk, and that is correct -- the real one is illegible at
+                // that size too, and leaving it out is what makes a thumbnail
+                // look like a mock-up of a window rather than a window.
+                Text {
+                  anchors.centerIn: parent
+                  width: parent.width * 0.5
+                  horizontalAlignment: Text.AlignHCenter
+                  elide: Text.ElideRight
+                  text: win.modelData.title || ""
+                  // hyprbars uses the theme's light_foreground; the shell's
+                  // Color singleton does not expose that one, and `foreground`
+                  // is the same colour a shade darker -- indistinguishable once
+                  // the desktop is shrunk.
+                  color: Color.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Math.max(1, shot.barPx * (13 / 44))
+                }
+              }
+
               ScreencopyView {
-                anchors.fill: parent
+                y: fauxBar.visible ? shot.barPx : 0
+                width: parent.width
+                height: parent.height - y
                 // Null while hidden -- see the note in the Spaces strip.
                 captureSource: root.shown ? win.modelData.wayland : null
                 // Live while shown, and only while shown -- see the note in the
@@ -1222,6 +1380,30 @@ Item {
             // Scaled by how far into the shrink the window is, not by
             // panel.shrink, so the border thins with the window instead of
             // snapping to its final width on the first frame.
+            Rectangle {
+              readonly property real k: win.realW > 0 ? win.width / win.realW : 1
+              readonly property real px: root.hyprBorderSize * k
+              visible: root.hyprBorderSize > 0
+              // Only at full size. This border exists to match the real desktop
+              // at the moment the surface is dropped, not to decorate the
+              // overview -- in there the white selection ring is the frame, and
+              // drawing both put two outlines a pixel apart around every
+              // window. It fades on exactly the animation that returns the
+              // windows to full size, so it is at full strength precisely when
+              // it has something to match.
+              opacity: root.expanded ? 0 : 1
+              Behavior on opacity {
+                NumberAnimation { duration: win.motionDuration; easing.type: Easing.OutCubic }
+              }
+              anchors.fill: parent
+              anchors.margins: -px
+              color: "transparent"
+              border.width: px
+              border.color: win.isHyprFocused ? root.hyprActiveBorder
+                                              : root.hyprInactiveBorder
+              radius: root.hyprRounding * k + px
+            }
+
             // Icon straddling the bottom edge of the window with the title
             // under it -- the macOS arrangement. Capped against the window so a
             // small floating window does not get an icon wider than itself.
