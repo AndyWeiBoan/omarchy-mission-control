@@ -207,7 +207,36 @@ Item {
   // shrink, so the band only changes once -- the strip lifting away while
   // everything dissolves around it.
   property bool stripDeployed: false
-  onExpandedChanged: root.stripDeployed = root.expanded
+  // Deployed one frame AFTER `expanded`, never in the same one.
+  //
+  // The strip snapped into place instead of sliding, from the second open
+  // onwards. Recorded at 60fps: the first open moved it over four frames
+  // (bottom edge 128 -> 132 -> 238 -> 239 -> 288), the second put it at 288 in
+  // a single frame. Nothing about the durations was wrong -- the animation
+  // never ran.
+  //
+  // `expanded` is set when the backing window becomes visible, and on a warm
+  // open that arrives before the strip item has been created. The item is then
+  // born with stripDeployed already true, so its y binding evaluates straight
+  // to 0 and the Behavior has no transition to animate: a Behavior only fires
+  // on a CHANGE, and there was none. The first open works only because the
+  // surface is cold and slow enough to lose the race.
+  //
+  // One frame of delay puts the change back after the item exists and is
+  // parked above the screen edge, which is what the Behavior needs.
+  onExpandedChanged: {
+    if (root.expanded)
+      deployStrip.restart();
+    else {
+      deployStrip.stop();
+      root.stripDeployed = false;
+    }
+  }
+  Timer {
+    id: deployStrip
+    interval: 16
+    onTriggered: if (root.expanded) root.stripDeployed = true
+  }
   // Belt and braces: if anything leaves this set while the surface goes, the
   // next open still starts from above the screen edge.
   onShownChanged: if (!root.shown) root.stripDeployed = false
@@ -322,31 +351,27 @@ Item {
   readonly property int openDuration: 320
   readonly property int closeDuration: 240
 
-  // The strip is given LESS time than the windows, deliberately, and this took
-  // three wrong guesses to land on.
+  // The strip runs at the SAME rate as the windows: one ratio, set to 1.
   //
-  // Both ran for the same 260ms to begin with, and measurement said they were
-  // simultaneous: start and finish within 3ms of each other, every time. It
-  // still looked as though the strip arrived late, because identical curves on
-  // different objects do not read as identical motion. The windows are
-  // shrinking from the whole screen to a thumbnail, so their last eighth is a
-  // nudge of something already small and the eye calls it arrived at about
-  // 60% of the way through. The strip is a solid 146px band travelling in a
-  // straight line, and its last eighth is eighteen pixels that are plainly
-  // still moving.
+  // It has been given less time twice, and both times the reasoning was about
+  // how the motion reads rather than about what it is. The note is worth
+  // keeping because the observation was real: with both at 260 ms, measurement
+  // said they were simultaneous -- start and finish within 3 ms, every time --
+  // and it still looked as though the strip arrived late, because identical
+  // curves on different objects do not read as identical motion. The windows
+  // shrink from the whole screen to a thumbnail, so their last eighth is a
+  // nudge of something already small; the strip is a solid 146px band whose
+  // last eighth is eighteen pixels that are plainly still moving.
   //
-  // Sharpening the curve made it worse, not better. OutQuint covers 76% of the
-  // distance in the first quarter and then creeps the rest over the remaining
-  // three quarters -- and a slow persistent drift is MORE visible than a
-  // quicker one, not less. The answer was not a different shape but less time:
-  // the strip is simply finished, tail and all, by the point the windows look
-  // settled.
-  // The strip gets about two thirds of the windows' time, in both directions.
-  // Not because it is less important but because it is a different object: see
-  // the note on its Behavior for why an identical duration did not read as
-  // simultaneous.
-  readonly property int stripOpenDuration: 200
-  readonly property int stripCloseDuration: 150
+  // Shortening it to 200 against a 260 ms window animation fixed that. What it
+  // did not survive was the windows going to 320 and the strip keeping its flat
+  // 200: the ratio fell to 0.62 and the strip visibly stopped while the windows
+  // were still moving. Raising it to 0.75 made it late again. andywei asked for
+  // the same rate, which is what this now is -- and tied to the window
+  // durations rather than written out, so it cannot drift again.
+  readonly property real stripTimeRatio: 0.85
+  readonly property int stripOpenDuration: Math.round(root.openDuration * root.stripTimeRatio)
+  readonly property int stripCloseDuration: Math.round(root.closeDuration * root.stripTimeRatio)
 
   // The crossfade to the real desktop. It begins 60ms before the windows are
   // home and runs past them, which is the "atmosphere outlives the content"
@@ -1294,37 +1319,75 @@ Item {
           id: strip
           width: parent.width
           height: panel.stripH
-          // Slides down from off-screen as the desktop shrinks to make room for
-          // it, which is where macOS puts the motion. Driven by stripDeployed,
-          // not by `expanded`, so it does not animate back out on close -- see
-          // the note on stripDeployed.
-          y: root.stripDeployed ? 0 : -panel.stripH
-          opacity: root.stripDeployed ? 1 : 0
+          // Driven by an explicit animation, not by a Behavior on a bound
+          // property.
+          //
+          // As bindings -- y: deployed ? 0 : -stripH, with a Behavior on each
+          // -- the strip snapped into place instead of sliding, and did it
+          // inconsistently: recorded at 60fps, one open moved it over four
+          // frames and the next put it at its final position in a single one.
+          // A Behavior only runs on a CHANGE, and on a warm open the item is
+          // created with the overview already expanded, so its y evaluates
+          // straight to 0 and there is no change to animate. Delaying the flag
+          // by a frame did not help, because the race is with the item's own
+          // construction rather than with a signal.
+          //
+          // Starting from an explicit `from` removes the question. Whenever the
+          // overview expands, the strip is put above the screen edge and told
+          // to travel; whenever it collapses, the reverse. It cannot matter
+          // when the item was built or what the flag was at the time.
+          y: -panel.stripH
+          opacity: 0
+
           // Arriving and leaving are not the same movement. Coming down it
           // decelerates into place, the way something that has arrived should;
           // going up it accelerates off, the way something leaving should. One
-          // curve for both directions makes the exit read as reluctant.
-          //
-          // See stripOpenDuration for why this is shorter than the windows' own
-          // animation rather than the same length.
-          Behavior on y {
+          // curve for both directions makes the exit read as reluctant. The
+          // fade tapers in both, because sliding away and dissolving are not
+          // the same motion even when they belong to the same object.
+          ParallelAnimation {
+            id: stripIn
             NumberAnimation {
-              duration: root.stripDeployed ? root.stripOpenDuration
-                                           : root.stripCloseDuration
+              target: strip; property: "y"; to: 0
+              duration: root.stripOpenDuration; easing.type: Easing.OutCubic
+            }
+            NumberAnimation {
+              target: strip; property: "opacity"; to: 1
+              duration: root.stripOpenDuration; easing.type: Easing.OutCubic
+            }
+          }
+          ParallelAnimation {
+            id: stripOut
+            NumberAnimation {
+              target: strip; property: "y"; to: -panel.stripH
               // A translation, so it accelerates away on the way out.
-              easing.type: root.stripDeployed ? Easing.OutCubic : Easing.InCubic
+              duration: root.stripCloseDuration; easing.type: Easing.InCubic
             }
-          }
-          Behavior on opacity {
-            // A fade, so it tapers in both directions -- see the vocabulary
-            // note. Sliding away and dissolving are not the same motion even
-            // when they belong to the same object.
             NumberAnimation {
-              duration: root.stripDeployed ? root.stripOpenDuration
-                                           : root.stripCloseDuration
-              easing.type: Easing.OutCubic
+              target: strip; property: "opacity"; to: 0
+              duration: root.stripCloseDuration; easing.type: Easing.OutCubic
             }
           }
+
+          function deploy(open) {
+            stripIn.stop();
+            stripOut.stop();
+            if (open) {
+              // Always from the parked position, even when the item was built
+              // after the overview had already expanded.
+              strip.y = -panel.stripH;
+              strip.opacity = 0;
+              stripIn.start();
+            } else {
+              stripOut.start();
+            }
+          }
+          Connections {
+            target: root
+            function onExpandedChanged() { strip.deploy(root.expanded); }
+          }
+          Component.onCompleted: if (root.expanded) strip.deploy(true);
+
           // Frosted, not merely tinted. 7% white over a sharp wallpaper is a
           // wash; macOS's Spaces strip is glass, and the give-away is that the
           // thumbnails in it sit against something softer than the desktop
