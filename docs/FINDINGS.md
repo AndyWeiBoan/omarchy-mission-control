@@ -17,7 +17,7 @@ is painted by a layer-surface client that a render pass cannot reach.
 Owning a surface is the only way to get the real desktop behind an overview.
 That is the reason this project exists.
 
-## 2. Off-screen toplevels can be captured, live
+## 2. Off-screen toplevels can be captured, live — but only off-*workspace*
 
 The premise the whole design rests on, verified with a spike before anything
 else was written: Hyprland renders a toplevel into an offscreen buffer on demand
@@ -28,6 +28,47 @@ A `live: false` + `captureFrame()` one-shot was tried to cut CPU and then
 reverted — one-shot capture of an *off-screen* toplevel is unverified, where
 live capture of one is measured and works. Do not reintroduce it without a
 window open on another workspace to test against.
+
+**This is narrower than it was written, and the difference took a long time to
+find.** "Off-screen" here means *on another workspace*. A window whose rectangle
+does not intersect the monitor at all — which is most of a scrolling workspace's
+row — is never captured, and fails silently:
+
+```cpp
+// src/managers/screenshare/ScreenshareManager.cpp, onOutputCommit()
+if (frame->m_session->m_type == SHARE_WINDOW) {
+    CBox geometry = frame->m_session->m_window->geometricBox(GEOMETRIC_CURRENT);
+    if (geometry.intersection({monitor->m_position, monitor->m_size}).empty())
+        return;                      // the frame is never copied
+}
+```
+
+No `ready`, no `failed`, nothing in Hyprland's log or Quickshell's. On the client
+side it is `hasContent` false and `sourceSize` `-1x-1` forever.
+
+Measured: a window with 7 px still on screen captures normally; a window entirely
+off it never receives a single frame. Windows on *other* workspaces are
+unaffected, because workspaces share a coordinate space and their rectangles are
+still inside the monitor — which is exactly why the original spike passed. The
+check predates the scrolling layout, when "on a visible workspace" did mean
+"inside the monitor".
+
+A related trap while diagnosing this: Quickshell sets `sourceSize` together with
+`hasContent`, when the first frame *completes* (`src/wayland/screencopy/view.cpp`).
+So `-1x-1` means "no frame ever completed" and is **not** evidence that the
+capture was never requested. That inference was made and was wrong.
+
+## 2b. A capture does not follow its window's resize
+
+Hyprland does handle it — `CScreenshareSession` listens on the window's resize
+event and recalculates its constraints — but the running capture does not pick
+the new size up. Move a window off a desktop, the survivors re-tile, and their
+thumbnails keep the old aspect: the card grows to the new rect while the picture
+in it does not, so it sits letterboxed inside its own frame. It does not settle;
+measured identical two seconds later.
+
+Drop `captureSource` and set it again on the next turn of the event loop to ask
+for a fresh one.
 
 ## 3. Under the Lua config parser, a dispatch string is a Lua expression
 
