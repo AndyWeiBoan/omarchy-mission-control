@@ -190,22 +190,85 @@ Item {
     NumberAnimation { duration: root.fadeDuration; easing.type: Easing.InOutQuad }
   }
 
-  // The Spaces strip slides in on open and then STAYS PUT until the surface is
-  // torn down, rather than animating back out on close.
+  // The Spaces strip comes down on open and goes back up on close, following
+  // `expanded` in both directions.
   //
-  // Animating it out was a flicker: that band of screen then changed twice in
-  // quick succession -- first the strip slid away and uncovered our copy of the
-  // wallpaper, then the surface vanished and the same band changed again to the
-  // real desktop and bar. Two transitions in one place reads as the region
-  // being redrawn, which is exactly what it was. Now it leaves once, dissolved
-  // together with everything else by the closing crossfade.
+  // It used to stay put and leave only by being dissolved with everything else,
+  // because animating it out was a flicker: that band of screen changed twice
+  // in quick succession -- first the strip slid away and uncovered our copy of
+  // the wallpaper, then the surface vanished and the same band changed again to
+  // the real desktop and bar. Two transitions in one place read as the region
+  // being redrawn, which is what it was.
+  //
+  // WATCH FOR THAT COMING BACK. The exit runs 0-260ms while the crossfade runs
+  // 200-330ms, so there is a stretch where the strip has left and the band is
+  // showing nothing but our wallpaper copy. If it flickers again the fix is not
+  // to abandon the motion but to start it with the fade instead of with the
+  // shrink, so the band only changes once -- the strip lifting away while
+  // everything dissolves around it.
   property bool stripDeployed: false
-  onExpandedChanged: if (root.expanded) root.stripDeployed = true
-  // Reset for the next open, once nothing is on screen to see it move.
+  onExpandedChanged: root.stripDeployed = root.expanded
+  // Belt and braces: if anything leaves this set while the surface goes, the
+  // next open still starts from above the screen edge.
   onShownChanged: if (!root.shown) root.stripDeployed = false
 
-  readonly property int shrinkDuration: 260
-  readonly property int fadeDuration: 130
+  // --- shared motion vocabulary ---------------------------------------------
+  // These numbers are not this plugin's own. They are the same ones the
+  // Launchpad overlay uses, so the two read as parts of one desktop rather than
+  // as two things that happen to sit on the same screen. Three rules, and the
+  // durations fall out of them:
+  //
+  //   Arriving takes longer than leaving.  320 in, 240 out. Something coming
+  //   towards you is worth watching; something going away has already said what
+  //   it had to say.
+  //
+  //   The atmosphere outlives the content.  Launchpad's blur runs 380/340
+  //   against its grid's 320/240, and the crossfade here is the same idea: it
+  //   starts before the windows are home and finishes after them, so the last
+  //   thing on screen is a dissolve rather than a cut.
+  //
+  //   Translations accelerate away; fades taper.  A thing sliding off should
+  //   look like it is leaving. A thing dissolving should not -- Launchpad's exit
+  //   fade was on an accelerating curve once, which puts most of the alpha in
+  //   the last few frames and reads as a flash rather than a fade.
+  //
+  // Anything retimed here should be retimed there, and the other way round.
+  readonly property int openDuration: 320
+  readonly property int closeDuration: 240
+
+  // The strip is given LESS time than the windows, deliberately, and this took
+  // three wrong guesses to land on.
+  //
+  // Both ran for the same 260ms to begin with, and measurement said they were
+  // simultaneous: start and finish within 3ms of each other, every time. It
+  // still looked as though the strip arrived late, because identical curves on
+  // different objects do not read as identical motion. The windows are
+  // shrinking from the whole screen to a thumbnail, so their last eighth is a
+  // nudge of something already small and the eye calls it arrived at about
+  // 60% of the way through. The strip is a solid 146px band travelling in a
+  // straight line, and its last eighth is eighteen pixels that are plainly
+  // still moving.
+  //
+  // Sharpening the curve made it worse, not better. OutQuint covers 76% of the
+  // distance in the first quarter and then creeps the rest over the remaining
+  // three quarters -- and a slow persistent drift is MORE visible than a
+  // quicker one, not less. The answer was not a different shape but less time:
+  // the strip is simply finished, tail and all, by the point the windows look
+  // settled.
+  // The strip gets about two thirds of the windows' time, in both directions.
+  // Not because it is less important but because it is a different object: see
+  // the note on its Behavior for why an identical duration did not read as
+  // simultaneous.
+  readonly property int stripOpenDuration: 200
+  readonly property int stripCloseDuration: 150
+
+  // The crossfade to the real desktop. It begins 60ms before the windows are
+  // home and runs past them, which is the "atmosphere outlives the content"
+  // rule above.
+  readonly property int fadeDuration: 160
+
+  // Everything the open does once the desktop underneath is settled. Split out
+  // of setShown because a flattened workspace reaches it one timer later.
 
   function setShown(next) {
     root.opened = next;
@@ -335,14 +398,14 @@ Item {
   // over the tail of the movement rather than after it.
   Timer {
     id: fadeOutSoon
-    interval: Math.max(0, root.shrinkDuration - 60)
+    interval: Math.max(0, root.closeDuration - 60)
     onTriggered: if (!root.opened) root.contentVisible = false
   }
 
   Timer {
     id: collapseThenHide
-    interval: root.shrinkDuration - 60 + root.fadeDuration
     onTriggered: if (!root.opened) root.shown = false
+    interval: root.closeDuration - 60 + root.fadeDuration
   }
 
   Timer {
@@ -834,11 +897,31 @@ Item {
           // the note on stripDeployed.
           y: root.stripDeployed ? 0 : -panel.stripH
           opacity: root.stripDeployed ? 1 : 0
+          // Arriving and leaving are not the same movement. Coming down it
+          // decelerates into place, the way something that has arrived should;
+          // going up it accelerates off, the way something leaving should. One
+          // curve for both directions makes the exit read as reluctant.
+          //
+          // See stripOpenDuration for why this is shorter than the windows' own
+          // animation rather than the same length.
           Behavior on y {
-            NumberAnimation { duration: root.shrinkDuration; easing.type: Easing.OutCubic }
+            NumberAnimation {
+              duration: root.stripDeployed ? root.stripOpenDuration
+                                           : root.stripCloseDuration
+              // A translation, so it accelerates away on the way out.
+              easing.type: root.stripDeployed ? Easing.OutCubic : Easing.InCubic
+            }
           }
           Behavior on opacity {
-            NumberAnimation { duration: root.shrinkDuration; easing.type: Easing.OutCubic }
+            // A fade, so it tapers in both directions -- see the vocabulary
+            // note. Sliding away and dissolving are not the same motion even
+            // when they belong to the same object.
+            NumberAnimation {
+              duration: root.stripDeployed ? root.stripOpenDuration
+                                           : root.stripCloseDuration
+              easing.type: Easing.OutCubic
+            }
+          }
           }
           color: Qt.rgba(1, 1, 1, 0.07)
 
@@ -1036,7 +1119,12 @@ Item {
             required property var modelData
             required property int index
             readonly property var ipc: modelData.lastIpcObject
+            readonly property int motionDuration: root.expanded ? root.openDuration
+                                                                : root.closeDuration
             readonly property bool isSelected: panel.selected === win.index
+            // Hyprland's focus, not ours: focusHistoryID 0 is the window that
+            // currently wears the active border on the real desktop, and that
+            // is what has to match when the surface goes away.
 
             // Two rects per window, and the animation between them is the
             // whole effect.
@@ -1076,10 +1164,12 @@ Item {
 
             // One easing for all four, or the window visibly changes shape on
             // the way down instead of just getting smaller.
-            Behavior on x { NumberAnimation { duration: root.shrinkDuration; easing.type: Easing.OutCubic } }
-            Behavior on y { NumberAnimation { duration: root.shrinkDuration; easing.type: Easing.OutCubic } }
-            Behavior on width { NumberAnimation { duration: root.shrinkDuration; easing.type: Easing.OutCubic } }
-            Behavior on height { NumberAnimation { duration: root.shrinkDuration; easing.type: Easing.OutCubic } }
+            Behavior on x { NumberAnimation {
+              duration: win.motionDuration; easing.type: Easing.OutCubic
+            } }
+            Behavior on y { NumberAnimation { duration: win.motionDuration; easing.type: Easing.OutCubic } }
+            Behavior on width { NumberAnimation { duration: win.motionDuration; easing.type: Easing.OutCubic } }
+            Behavior on height { NumberAnimation { duration: win.motionDuration; easing.type: Easing.OutCubic } }
 
             Item {
               id: shot
@@ -1110,10 +1200,28 @@ Item {
                 Behavior on border.color { ColorAnimation { duration: 120 } }
               }
 
-              scale: win.isSelected ? 1.02 : 1.0
+              // Gated on `expanded`, which the selection ring above already
+              // was and this was not. Left ungated it stayed on through the
+              // close: the window animated back to its real rect and then sat
+              // there two percent too large until the surface was dropped and
+              // it snapped to the real one. What that looks like is the window
+              // overshooting its old position and pulling back, which is not a
+              // flourish -- it is the overview's selection state outliving the
+              // overview.
+              scale: (win.isSelected && root.expanded) ? 1.02 : 1.0
               Behavior on scale { NumberAnimation { duration: 130; easing.type: Easing.OutCubic } }
             }
 
+            // Hyprland's own border, redrawn, because the capture cannot carry
+            // it. It sits OUTSIDE the window rect -- a tiled window reports
+            // at=[12,89] against a 10px gap, and those two missing pixels each
+            // side are the border -- and with hyprbars' bar_precedence_over_
+            // border it wraps the bar and the content together, which is what
+            // this rect already is.
+            //
+            // Scaled by how far into the shrink the window is, not by
+            // panel.shrink, so the border thins with the window instead of
+            // snapping to its final width on the first frame.
             // Icon straddling the bottom edge of the window with the title
             // under it -- the macOS arrangement. Capped against the window so a
             // small floating window does not get an icon wider than itself.
