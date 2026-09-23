@@ -55,6 +55,7 @@ Item {
   // `expanded` true while hidden, and every later toggle read that as "already
   // open" and tried to close something already closed.
   property bool opened: false
+  property var activePanel: null
 
   // Called by the shell on summon. The payload is accepted and ignored -- there
   // is only one thing this plugin does -- but the signature is part of the
@@ -84,16 +85,16 @@ Item {
     target: "io.github.andyweiboan.missioncontrol"
 
     function previousWorkspace(): string {
-      if (root.opened)
-        panel.stepDesktop(-1)
+      if (root.opened && root.activePanel)
+        root.activePanel.stepDesktop(-1)
       else
         root.dispatch('hl.dsp.focus({ workspace = "e-1" })', "workspace e-1")
       return "ok"
     }
 
     function nextWorkspace(): string {
-      if (root.opened)
-        panel.stepDesktop(1)
+      if (root.opened && root.activePanel)
+        root.activePanel.stepDesktop(1)
       else
         root.dispatch('hl.dsp.focus({ workspace = "e+1" })', "workspace e+1")
       return "ok"
@@ -891,6 +892,8 @@ Item {
       id: panel
       required property var modelData
 
+      Component.onCompleted: root.activePanel = panel
+
       screen: modelData
       anchors { top: true; bottom: true; left: true; right: true }
       color: "transparent"
@@ -1511,8 +1514,17 @@ Item {
       }
 
       Item {
+        id: keyCatcher
         anchors.fill: parent
-        focus: true
+        focus: root.shown
+        Component.onCompleted: if (root.shown) forceActiveFocus()
+        Connections {
+          target: root
+          function onShownChanged() {
+            if (root.shown)
+              Qt.callLater(function() { keyCatcher.forceActiveFocus(); })
+          }
+        }
         Keys.onEscapePressed: root.dismiss()
         // Left/right walk the Spaces strip and actually switch desktop, without
         // closing -- the exposé below follows, so you can flick through the
@@ -1993,12 +2005,12 @@ Item {
                 Rectangle {
                   id: reorderDropMarker
                   z: 20
-                  width: Math.max(4, Math.round(panel.uiScale * 5))
+                  width: Math.max(10, Math.round(panel.stripGap * 0.72))
                   height: parent.height + Math.round(panel.stripPad * 0.8)
                   y: -Math.round(panel.stripPad * 0.4)
                   x: panel.reorderEnd ? parent.width - width / 2 : -width / 2
-                  radius: width / 2
-                  color: Qt.rgba(0.45, 0.82, 1.0, 0.95)
+                  radius: Math.round(width / 2)
+                  color: Qt.rgba(1, 1, 1, 0.28)
                   visible: root.expanded
                            && panel.draggingDesktop >= 0
                            && panel.draggingDesktop !== deskCell.deskId
@@ -2007,6 +2019,11 @@ Item {
                                    && deskCell.index === panel.orderedDesktops.length - 1))
                   opacity: visible ? 1.0 : 0.0
                   Behavior on opacity { NumberAnimation { duration: 90 } }
+                }
+
+                transform: Translate {
+                  x: deskDrag.active ? deskDrag.activeTranslation.x : 0
+                  y: deskDrag.active ? deskDrag.activeTranslation.y : 0
                 }
 
                 // Workspace order is visual and runtime-only. The handler does
@@ -2035,8 +2052,7 @@ Item {
                     const centre = deskCell.mapToItem(null,
                                                        deskCell.width / 2,
                                                        deskCell.height / 2);
-                    panel.reorderTarget = panel.reorderTargetAt(
-                        centre.x + deskDrag.activeTranslation.x);
+                    panel.reorderTarget = panel.reorderTargetAt(centre.x);
                   }
                 }
 
