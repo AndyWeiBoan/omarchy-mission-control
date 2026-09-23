@@ -76,6 +76,30 @@ Item {
     else root.open("{}")
   }
 
+  // The compositor owns the CTRL+LEFT/RIGHT binds, but routing them through
+  // the plugin lets the same keys follow the runtime thumbnail order while
+  // Mission Control is open. When it is closed, retain normal relative
+  // workspace navigation.
+  IpcHandler {
+    target: "io.github.andyweiboan.missioncontrol"
+
+    function previousWorkspace(): string {
+      if (root.opened)
+        panel.stepDesktop(-1)
+      else
+        root.dispatch('hl.dsp.focus({ workspace = "e-1" })', "workspace e-1")
+      return "ok"
+    }
+
+    function nextWorkspace(): string {
+      if (root.opened)
+        panel.stepDesktop(1)
+      else
+        root.dispatch('hl.dsp.focus({ workspace = "e+1" })', "workspace e+1")
+      return "ok"
+    }
+  }
+
   // Closing on our own initiative -- Escape, a click on the backdrop, picking a
   // window. Tells the shell as well, so its open-plugin bookkeeping does not go
   // on thinking we are up; without this the next `toggle` would try to hide an
@@ -1150,6 +1174,7 @@ Item {
       property var dropCell: null
       property int reorderTarget: -1
       property int draggingDesktop: -1
+      property bool reorderEnd: false
 
       function reorderTargetAt(sceneX) {
         const p = stripRow.mapFromItem(null, sceneX, 0);
@@ -1161,6 +1186,7 @@ Item {
           if (p.x < c.x + c.width / 2)
             return c.deskId;
         }
+        panel.reorderEnd = true;
         return -1;
       }
 
@@ -1957,11 +1983,31 @@ Item {
               delegate: Item {
                 id: deskCell
                 required property var modelData
+                required property int index
                 // What a drop on this tile means. Read by panel.dropTargetAt,
                 // which hit-tests the strip by position rather than by index.
                 readonly property int deskId: deskCell.modelData.id
                 width: panel.stripTileW
                 height: panel.stripTileH + panel.stripLabelBand
+
+                Rectangle {
+                  id: reorderDropMarker
+                  z: 20
+                  width: Math.max(4, Math.round(panel.uiScale * 5))
+                  height: parent.height + Math.round(panel.stripPad * 0.8)
+                  y: -Math.round(panel.stripPad * 0.4)
+                  x: panel.reorderEnd ? parent.width - width / 2 : -width / 2
+                  radius: width / 2
+                  color: Qt.rgba(0.45, 0.82, 1.0, 0.95)
+                  visible: root.expanded
+                           && panel.draggingDesktop >= 0
+                           && panel.draggingDesktop !== deskCell.deskId
+                           && (panel.reorderTarget === deskCell.deskId
+                               || (panel.reorderEnd
+                                   && deskCell.index === panel.orderedDesktops.length - 1))
+                  opacity: visible ? 1.0 : 0.0
+                  Behavior on opacity { NumberAnimation { duration: 90 } }
+                }
 
                 // Workspace order is visual and runtime-only. The handler does
                 // not move the Hyprland workspace; it only changes the order
@@ -1973,11 +2019,13 @@ Item {
                   onActiveChanged: {
                     if (active) {
                       panel.draggingDesktop = deskCell.deskId;
+                      panel.reorderEnd = false;
                       return;
                     }
                     const before = panel.reorderTarget;
                     panel.draggingDesktop = -1;
                     panel.reorderTarget = -1;
+                    panel.reorderEnd = false;
                     if (before !== deskCell.deskId)
                       panel.reorderDesktop(deskCell.deskId, before);
                   }
@@ -2234,6 +2282,8 @@ Item {
                        : panel.reorderTarget === deskCell.deskId ? 1.08
                        : deskHover.hovered ? 1.03
                                            : 1.0
+                  opacity: panel.draggingDesktop === deskCell.deskId ? 0.55 : 1.0
+                  Behavior on opacity { NumberAnimation { duration: 100 } }
                   Behavior on scale {
                     NumberAnimation {
                       duration: panel.dropTarget === deskCell.deskId ? 300 : 130
