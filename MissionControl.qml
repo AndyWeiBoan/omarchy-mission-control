@@ -1178,6 +1178,7 @@ Item {
       property int reorderTarget: -1
       property int draggingDesktop: -1
       property bool reorderEnd: false
+      property int reorderInsertIndex: -1
 
       function reorderTargetAt(sceneX) {
         const p = stripRow.mapFromItem(null, sceneX, 0);
@@ -1186,10 +1187,13 @@ Item {
           const c = cells[i];
           if (c.deskId === undefined || !c.visible)
             continue;
-          if (p.x < c.x + c.width / 2)
+          if (p.x < c.x + c.width / 2) {
+            panel.reorderInsertIndex = c.index;
             return c.deskId;
+          }
         }
         panel.reorderEnd = true;
+        panel.reorderInsertIndex = panel.orderedDesktops.length;
         return -1;
       }
 
@@ -2022,8 +2026,28 @@ Item {
                 }
 
                 transform: Translate {
-                  x: deskDrag.active ? deskDrag.activeTranslation.x : 0
-                  y: deskDrag.active ? deskDrag.activeTranslation.y : 0
+                  readonly property int sourceIndex: panel.orderedDesktops.findIndex(
+                      ws => ws.id === panel.draggingDesktop)
+                  readonly property real step: deskCell.width + panel.stripGap
+                  readonly property real neighborShift: {
+                    if (!deskDrag.active || sourceIndex < 0
+                        || panel.reorderInsertIndex < 0
+                        || deskCell.index === sourceIndex)
+                      return 0;
+                    if (sourceIndex < panel.reorderInsertIndex
+                        && deskCell.index > sourceIndex
+                        && deskCell.index <= panel.reorderInsertIndex)
+                      return -step;
+                    if (panel.reorderInsertIndex < sourceIndex
+                        && deskCell.index >= panel.reorderInsertIndex
+                        && deskCell.index < sourceIndex)
+                      return step;
+                    return 0;
+                  }
+                  x: deskCell.index === sourceIndex && deskDrag.active
+                     ? deskDrag.activeTranslation.x : neighborShift
+                  y: deskCell.index === sourceIndex && deskDrag.active
+                     ? deskDrag.activeTranslation.y : 0
                 }
 
                 // Workspace order is visual and runtime-only. The handler does
@@ -2037,12 +2061,14 @@ Item {
                     if (active) {
                       panel.draggingDesktop = deskCell.deskId;
                       panel.reorderEnd = false;
+                      panel.reorderInsertIndex = deskCell.index;
                       return;
                     }
                     const before = panel.reorderTarget;
                     panel.draggingDesktop = -1;
                     panel.reorderTarget = -1;
                     panel.reorderEnd = false;
+                    panel.reorderInsertIndex = -1;
                     if (before !== deskCell.deskId)
                       panel.reorderDesktop(deskCell.deskId, before);
                   }
