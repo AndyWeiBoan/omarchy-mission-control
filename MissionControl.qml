@@ -85,7 +85,7 @@ Item {
     target: "io.github.andyweiboan.missioncontrol"
 
     function previousWorkspace(): string {
-      if (root.opened && root.activePanel)
+      if (root.activePanel)
         root.activePanel.stepDesktop(-1)
       else
         root.dispatch('hl.dsp.focus({ workspace = "e-1" })', "workspace e-1")
@@ -93,7 +93,7 @@ Item {
     }
 
     function nextWorkspace(): string {
-      if (root.opened && root.activePanel)
+      if (root.activePanel)
         root.activePanel.stepDesktop(1)
       else
         root.dispatch('hl.dsp.focus({ workspace = "e+1" })', "workspace e+1")

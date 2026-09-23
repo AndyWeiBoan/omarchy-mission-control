@@ -13,5 +13,6 @@ grep -q 'reorderDropMarker' "$qml_file"
 grep -q 'IpcHandler' "$qml_file"
 grep -q 'previousWorkspace' "$qml_file"
 grep -q 'nextWorkspace' "$qml_file"
+grep -q 'if (root.activePanel)' "$qml_file"
 
 echo "workspace reorder feature markers present"
