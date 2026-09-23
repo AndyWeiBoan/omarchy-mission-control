@@ -10,6 +10,8 @@ title.
 
 - Click a window to jump to it, or a desktop to switch to it.
 - **Drag** a window onto a desktop to move it there.
+- **Drag** a desktop thumbnail left or right to reorder the strip for the
+  current session. Workspace IDs and Hyprland configuration are unchanged.
 - **Add** a desktop with the `+` at the right-hand end, **remove** one with the
   close badge that appears when you hover it.
 

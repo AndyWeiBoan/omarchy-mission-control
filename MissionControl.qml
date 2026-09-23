@@ -55,6 +55,7 @@ Item {
   // `expanded` true while hidden, and every later toggle read that as "already
   // open" and tried to close something already closed.
   property bool opened: false
+  property var activePanel: null
 
   // Called by the shell on summon. The payload is accepted and ignored -- there
   // is only one thing this plugin does -- but the signature is part of the
@@ -74,6 +75,30 @@ Item {
   function toggle() {
     if (root.opened) root.dismiss()
     else root.open("{}")
+  }
+
+  // The compositor owns the CTRL+LEFT/RIGHT binds, but routing them through
+  // the plugin lets the same keys follow the runtime thumbnail order while
+  // Mission Control is open. When it is closed, retain normal relative
+  // workspace navigation.
+  IpcHandler {
+    target: "io.github.andyweiboan.missioncontrol"
+
+    function previousWorkspace(): string {
+      if (root.activePanel)
+        root.activePanel.stepDesktop(-1)
+      else
+        root.dispatch('hl.dsp.focus({ workspace = "e-1" })', "workspace e-1")
+      return "ok"
+    }
+
+    function nextWorkspace(): string {
+      if (root.activePanel)
+        root.activePanel.stepDesktop(1)
+      else
+        root.dispatch('hl.dsp.focus({ workspace = "e+1" })', "workspace e+1")
+      return "ok"
+    }
   }
 
   // Closing on our own initiative -- Escape, a click on the backdrop, picking a
@@ -891,6 +916,8 @@ Item {
       id: panel
       required property var modelData
 
+      Component.onCompleted: root.activePanel = panel
+
       screen: modelData
       anchors { top: true; bottom: true; left: true; right: true }
       color: "transparent"
@@ -964,6 +991,42 @@ Item {
         }
         out.sort((a, b) => a.id - b.id);
         return out;
+      }
+
+      // Runtime-only visual order. Hyprland workspace IDs stay unchanged, so
+      // this does not alter bindings or workspace rules and disappears on a
+      // shell restart.
+      property var desktopOrder: []
+      readonly property var orderedDesktops: {
+        const source = panel.desktops;
+        const byId = {};
+        const out = [];
+        for (let i = 0; i < source.length; i++)
+          byId[source[i].id] = source[i];
+        for (let i = 0; i < panel.desktopOrder.length; i++) {
+          const ws = byId[panel.desktopOrder[i]];
+          if (ws) {
+            out.push(ws);
+            delete byId[panel.desktopOrder[i]];
+          }
+        }
+        for (let i = 0; i < source.length; i++)
+          if (byId[source[i].id])
+            out.push(source[i]);
+        return out;
+      }
+
+      function reorderDesktop(deskId, beforeId) {
+        const order = panel.orderedDesktops.map(ws => ws.id);
+        const from = order.indexOf(deskId);
+        if (from < 0)
+          return;
+        order.splice(from, 1);
+        let to = beforeId < 0 ? order.length : order.indexOf(beforeId);
+        if (to < 0)
+          to = order.length;
+        order.splice(to, 0, deskId);
+        panel.desktopOrder = order;
       }
 
       readonly property var currentDesktop: {
@@ -1136,6 +1199,27 @@ Item {
       // The tile itself, not just its id: the dragged window is flown to it, so
       // its position and size are needed, not merely its identity.
       property var dropCell: null
+      property int reorderTarget: -1
+      property int draggingDesktop: -1
+      property bool reorderEnd: false
+      property int reorderInsertIndex: -1
+
+      function reorderTargetAt(sceneX) {
+        const p = stripRow.mapFromItem(null, sceneX, 0);
+        const cells = stripRow.children;
+        for (let i = 0; i < cells.length; i++) {
+          const c = cells[i];
+          if (c.deskId === undefined || !c.visible)
+            continue;
+          if (p.x < c.x + c.width / 2) {
+            panel.reorderInsertIndex = c.index;
+            return c.deskId;
+          }
+        }
+        panel.reorderEnd = true;
+        panel.reorderInsertIndex = panel.orderedDesktops.length;
+        return -1;
+      }
 
       // How far the Spaces strip is scrolled from centre. Zero, and irrelevant,
       // until there are more desktops than fit. Re-clamped when the row's length
@@ -1464,8 +1548,17 @@ Item {
       }
 
       Item {
+        id: keyCatcher
         anchors.fill: parent
-        focus: true
+        focus: root.shown
+        Component.onCompleted: if (root.shown) forceActiveFocus()
+        Connections {
+          target: root
+          function onShownChanged() {
+            if (root.shown)
+              Qt.callLater(function() { keyCatcher.forceActiveFocus(); })
+          }
+        }
         Keys.onEscapePressed: root.dismiss()
         // Left/right walk the Spaces strip and actually switch desktop, without
         // closing -- the exposé below follows, so you can flick through the
@@ -1510,14 +1603,14 @@ Item {
       // Switch desktop but stay open. Not goToWorkspace(), which quits: the
       // point of walking the strip is to look before you leap.
       function stepDesktop(dir) {
-        const n = panel.desktops.length;
+        const n = panel.orderedDesktops.length;
         if (n === 0)
           return;
         let i = 0;
         for (let k = 0; k < n; k++)
-          if (panel.desktops[k].focused)
+          if (panel.orderedDesktops[k].focused)
             i = k;
-        const next = panel.desktops[(i + dir + n) % n];
+        const next = panel.orderedDesktops[(i + dir + n) % n];
         const target = root.safeWorkspaceId(next.id);
         if (target === "")
           return;
@@ -1931,16 +2024,93 @@ Item {
             spacing: panel.stripGap
 
             Repeater {
-              model: panel.desktops
+              model: panel.orderedDesktops
 
               delegate: Item {
                 id: deskCell
                 required property var modelData
+                required property int index
                 // What a drop on this tile means. Read by panel.dropTargetAt,
                 // which hit-tests the strip by position rather than by index.
                 readonly property int deskId: deskCell.modelData.id
                 width: panel.stripTileW
                 height: panel.stripTileH + panel.stripLabelBand
+
+                Rectangle {
+                  id: reorderDropMarker
+                  z: 20
+                  width: Math.max(10, Math.round(panel.stripGap * 0.72))
+                  height: parent.height + Math.round(panel.stripPad * 0.8)
+                  y: -Math.round(panel.stripPad * 0.4)
+                  x: panel.reorderEnd ? parent.width - width / 2 : -width / 2
+                  radius: Math.round(width / 2)
+                  color: Qt.rgba(1, 1, 1, 0.28)
+                  visible: root.expanded
+                           && panel.draggingDesktop >= 0
+                           && panel.draggingDesktop !== deskCell.deskId
+                           && (panel.reorderTarget === deskCell.deskId
+                               || (panel.reorderEnd
+                                   && deskCell.index === panel.orderedDesktops.length - 1))
+                  opacity: visible ? 1.0 : 0.0
+                  Behavior on opacity { NumberAnimation { duration: 90 } }
+                }
+
+                transform: Translate {
+                  readonly property int sourceIndex: panel.orderedDesktops.findIndex(
+                      ws => ws.id === panel.draggingDesktop)
+                  readonly property real step: deskCell.width + panel.stripGap
+                  readonly property real neighborShift: {
+                    if (!deskDrag.active || sourceIndex < 0
+                        || panel.reorderInsertIndex < 0
+                        || deskCell.index === sourceIndex)
+                      return 0;
+                    if (sourceIndex < panel.reorderInsertIndex
+                        && deskCell.index > sourceIndex
+                        && deskCell.index <= panel.reorderInsertIndex)
+                      return -step;
+                    if (panel.reorderInsertIndex < sourceIndex
+                        && deskCell.index >= panel.reorderInsertIndex
+                        && deskCell.index < sourceIndex)
+                      return step;
+                    return 0;
+                  }
+                  x: deskCell.index === sourceIndex && deskDrag.active
+                     ? deskDrag.activeTranslation.x : neighborShift
+                  y: deskCell.index === sourceIndex && deskDrag.active
+                     ? deskDrag.activeTranslation.y : 0
+                }
+
+                // Workspace order is visual and runtime-only. The handler does
+                // not move the Hyprland workspace; it only changes the order
+                // in which the strip's model is presented.
+                DragHandler {
+                  id: deskDrag
+                  target: null
+                  enabled: root.expanded
+                  onActiveChanged: {
+                    if (active) {
+                      panel.draggingDesktop = deskCell.deskId;
+                      panel.reorderEnd = false;
+                      panel.reorderInsertIndex = deskCell.index;
+                      return;
+                    }
+                    const before = panel.reorderTarget;
+                    panel.draggingDesktop = -1;
+                    panel.reorderTarget = -1;
+                    panel.reorderEnd = false;
+                    panel.reorderInsertIndex = -1;
+                    if (before !== deskCell.deskId)
+                      panel.reorderDesktop(deskCell.deskId, before);
+                  }
+                  onCentroidChanged: {
+                    if (!deskDrag.active)
+                      return;
+                    const centre = deskCell.mapToItem(null,
+                                                       deskCell.width / 2,
+                                                       deskCell.height / 2);
+                    panel.reorderTarget = panel.reorderTargetAt(centre.x);
+                  }
+                }
 
                 readonly property var deskWindows: {
                   const out = [];
@@ -2181,8 +2351,11 @@ Item {
                   // than merely lighting up: the overshoot is the part that
                   // reads as "this one is ready to take it".
                   scale: panel.dropTarget === deskCell.deskId ? 1.12
+                       : panel.reorderTarget === deskCell.deskId ? 1.08
                        : deskHover.hovered ? 1.03
                                            : 1.0
+                  opacity: panel.draggingDesktop === deskCell.deskId ? 0.55 : 1.0
+                  Behavior on opacity { NumberAnimation { duration: 100 } }
                   Behavior on scale {
                     NumberAnimation {
                       duration: panel.dropTarget === deskCell.deskId ? 300 : 130
