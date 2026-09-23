@@ -2288,9 +2288,11 @@ Item {
             // in the scale, which is the only thing that should be easing.
             readonly property real dragDX: winDrag.active ? win.freeDX : 0
             readonly property real dragDY: winDrag.active ? win.freeDY : 0
-            Behavior on dragScale {
-              NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
-            }
+            // No Behavior on dragScale any more, and for the same reason the
+            // position has none: the scale is now a function of where the
+            // window IS, so easing it makes it lag the hand. On the real thing
+            // there is no interpolation here at all -- the size tracks the
+            // pointer frame for frame (measured; see dragScale below).
             transform: Scale {
               origin.x: win.width / 2
               origin.y: win.height / 2
@@ -2301,25 +2303,88 @@ Item {
             y: win.layoutY + win.dragDY
             z: winDrag.active ? 10 : 0
 
-            // Picked up, the window shrinks. Held over a desktop, it shrinks
-            // further -- and that is ALL it does until the button comes up.
+            // Picked up, the window shrinks CONTINUOUSLY as it travels toward
+            // the strip -- not in steps, and not because it is over a target.
             //
-            // It used to fly to the tile and take its size, which overshot the
-            // idea: the drop looked as though it had already happened, while
-            // the window was still in hand and could still be taken somewhere
-            // else. Getting smaller over a target says the same thing without
-            // claiming it is finished. The window goes in when you let go, and
-            // not before.
-            readonly property bool overTarget: winDrag.active && panel.dropCell !== null
+            // Measured off the real thing (2026-09-23, screen recording of a
+            // drag in Mission Control on the Mac mini, tracked by the white
+            // window's pixel area and centroid; see
+            // themes/macos-light/provenance/macos-animations.md):
+            //
+            //     centroid y   371   307   286   230   186   146   113
+            //     scale      1.000 0.867 0.800 0.594 0.420 0.266 0.118
+            //
+            //     s = 0.12 + 0.94 * u^0.9      RMS 0.0133   <- this
+            //     s = 0.14 + 0.95 * u          RMS 0.0204   (pure linear)
+            //
+            // u is the window centre's remaining distance to the strip,
+            // normalised so that 1 is where it was picked up and 0 is the
+            // strip. The exponent is 0.9, so it is very nearly linear -- it
+            // shrinks a touch more slowly close to the strip. Linear is only
+            // 2% worse and would not be visible; the exponent is kept because
+            // it is what was measured, not because the difference shows.
+            //
+            // The whole travel above took 0.87s, but that is the speed of the
+            // hand, not a duration: there is no timed animation here. What the
+            // release adds is a 0.073s settle from 0.128 to 0.118 -- so small
+            // that the drop is effectively instant, because by then the window
+            // is already thumbnail-sized.
+            //
+            // This replaces a three-step version (1.0 -> 0.45 carried -> 0.16
+            // over a target) with a Behavior easing between them. That version
+            // had a real idea behind it -- getting smaller over a target says
+            // "this is where it would go" without claiming the drop already
+            // happened -- but the real thing conveys the same thing by
+            // proximity alone, and continuously.
+            readonly property real dropScale: 0.118
+            readonly property real dragScaleExp: 0.9
 
-            // The size it is carried at, and the smaller size it takes over a
-            // target. The hit test uses carriedScale and never dragScale: the
-            // rectangle that decides whether we are over a tile must not itself
-            // depend on being over a tile, or the two define each other.
-            readonly property real carriedScale: 0.45
+            // Scene-space anchors, sampled once when the drag starts rather
+            // than bound: the strip does not move during a drag, and a binding
+            // through mapToItem would not re-evaluate reliably anyway.
+            property real pickCursorSceneY: 0
+            property real stripCentreSceneY: 0
+
+            // u 看的是**游標**，不是視窗中心。
+            //
+            // 用中心是錯的，而且錯法不明顯：位置那邊有一項補償
+            //     freeDY = activeTranslation.y
+            //            + (1 - dragScale) * (pressPosition.y - height / 2)
+            // 讓「抓住的那一點」留在游標下（因為縮放繞中心）。抓視窗上緣時
+            // 那一項是負的、把視窗往上推，於是它畫出來比 pickCentre +
+            // translation 更靠近 strip —— 而 u 沒有那一項，還以為離得遠，
+            // 尺寸就跟不上。抓下緣則相反。andywei 2026-09-23 回報的
+            // 「從視窗上方拖曳，移動距離短，視窗沒有變成合適的大小」就是這個。
+            //
+            // 把那一項補進 u 會變成循環（dragScale -> u -> dragScale）。
+            // 游標沒有這個問題：它的位置與縮放無關，而且縮到小尺寸時視窗
+            // 本來就幾乎貼在游標上（中心到游標的偏移也跟著縮），所以
+            // 「游標抵達 strip」和「視窗抵達 strip」會合而為一。
+            //
+            // 附帶好處：抓視窗的哪裡不再影響縮放，這正是回報的問題要的。
+            readonly property real dragU: {
+              if (!winDrag.active)
+                return 1;
+              const span = win.pickCursorSceneY - win.stripCentreSceneY;
+              if (span <= 1)
+                return 0;
+              const cur = win.pickCursorSceneY + winDrag.activeTranslation.y;
+              return Math.max(0, Math.min(1, (cur - win.stripCentreSceneY) / span));
+            }
+
             property real dragScale: !winDrag.active ? 1.0
-                                   : win.overTarget ? 0.16
-                                                    : win.carriedScale
+                                   : win.dropScale
+                                     + (1 - win.dropScale)
+                                       * Math.pow(win.dragU, win.dragScaleExp)
+
+            // The hit-test rectangle now uses the SAME scale the window is
+            // drawn at. The old note said it must not, because a fixed 0.45
+            // broke a circle: the scale depended on being over a tile, and
+            // being over a tile depended on the scale. That circle is gone --
+            // dragScale is a function of position only -- and leaving the hit
+            // test at 0.45 while the window draws at 0.12 near the strip would
+            // light a target up long before the window looks anywhere near it.
+            readonly property real carriedScale: win.dragScale
 
             // Scaled about the CENTRE, always, so that flying to a tile is a
             // matter of putting that centre on the tile's centre. The cost is
@@ -2579,6 +2644,11 @@ Item {
               onActiveChanged: {
                 if (active) {
                   panel.dragging = win.index;
+                  // Sampled here, not bound -- see pickCursorSceneY above.
+                  win.pickCursorSceneY = winDrag.centroid.scenePosition.y;
+                  const sv = stripViewport.mapToItem(null, 0,
+                                                     stripViewport.height / 2);
+                  win.stripCentreSceneY = sv.y;
                   return;
                 }
                 const target = panel.dropTarget;
