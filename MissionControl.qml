@@ -1322,8 +1322,14 @@ Item {
       // is where macOS puts it anyway; it does not hide the menu bar either.
       readonly property real barBand: panel.reserved[1]
 
-      // Both pieces below draw the SAME full-panel wallpaper and clip to their
-      // own band, rather than each being fitted to its own height. Fitting them
+      // Both pieces below draw the SAME full-screen wallpaper and clip to their
+      // own band, rather than each being fitted to its own height.
+      //
+      // Sized from the SCREEN, like everything else here. These were the last
+      // five things still measured off the window, and the window is not the
+      // screen: tested on a 2560x1440 headless output, the wallpaper covered
+      // the top of the overview and the rest was black. The layout had already
+      // been moved to panel.screenH; the layers that actually paint had not. Fitting them
       // separately means two different PreserveAspectCrop results and a seam
       // along the join -- which the Spaces strip does not hide, because the
       // strip is only 7% white.
@@ -1338,7 +1344,7 @@ Item {
         id: wallpaper
         y: -panel.barBand
         width: parent.width
-        height: panel.height
+        height: panel.screenH
         source: root.wallpaperSource
         fillMode: Image.PreserveAspectCrop
         // Do NOT add sourceSize here. Omarchy's wallpapers are 5K and the
@@ -1361,7 +1367,7 @@ Item {
       Rectangle {
         y: -panel.barBand
         width: parent.width
-        height: panel.height
+        height: panel.screenH
         color: "#0b0d14"
         opacity: 0.14
       }
@@ -1396,7 +1402,7 @@ Item {
 
         Image {
           width: parent.width
-          height: panel.height
+          height: panel.screenH
           source: root.wallpaperSource
           fillMode: Image.PreserveAspectCrop
           asynchronous: true
@@ -1404,7 +1410,7 @@ Item {
         }
         Rectangle {
           width: parent.width
-          height: panel.height
+          height: panel.screenH
           color: "#0b0d14"
           opacity: 0.14
         }
@@ -1628,7 +1634,7 @@ Item {
               // would be a different PreserveAspectCrop result and the frost
               // would not line up with the sharp wallpaper it meets at the
               // strip's lower edge.
-              height: panel.height + bleed * 2
+              height: panel.screenH + bleed * 2
               source: root.wallpaperSource
               fillMode: Image.PreserveAspectCrop
               // Same source and same (absent) sourceSize as the background, so
