@@ -348,8 +348,31 @@ Item {
   //   the last few frames and reads as a flash rather than a fade.
   //
   // Anything retimed here should be retimed there, and the other way round.
-  readonly property int openDuration: 320
-  readonly property int closeDuration: 240
+  //
+  // 2026-09-23：改成實機量測反推的值。
+  //
+  // 從 Mac mini 錄下四次 Mission Control 開關（QuickTime / ScreenCaptureKit，
+  // 55fps，讀每幀真實 PTS）。訊號是**頂端桌面列**：那次實機只有一個視窗，
+  // 桌面內容的垂直位移全程為 0（互相關量的），macOS 14 在視窗少時幾乎不重排，
+  // 所以唯一在動的就是頂端約 48pt 的那條列。
+  //
+  //     strip 進入  0.175 / 0.214 / 0.188 / 0.207 s  ->  196ms ± 15
+  //     strip 離開  0.288 / 0.254 / 0.172 / 0.230 s  ->  236ms ± 43
+  //
+  // 下面兩個是**反推**的：保留 stripTimeRatio 0.85（那是實際看出來調的，
+  // 不是量出來的），讓 strip 落在實機值上 ->  196/0.85 = 231、236/0.85 = 278。
+  //
+  // **視窗本身的時長沒有量到**（實機那次沒有東西在重排可以量）。
+  //
+  // 注意：實機是**離開比進入慢**（196 進 / 236 出），跟上面第一條規則
+  // 「Arriving takes longer than leaving」方向相反。Launchpad 的霧也一樣
+  // （267 進 / 332 出）。那是實機行為，不是我們的偏好。
+  //
+  // 曲線形狀沒有跟著改：四次自由擬合的控制點 x1 從 0.15 到 0.83，
+  // ~11 個取樣點定不住形狀，只定得住時長。OutCubic / InCubic 維持原樣。
+  // 推導見 themes/macos-light/provenance/macos-animations.md 第 3 節。
+  readonly property int openDuration: 231
+  readonly property int closeDuration: 278
 
   // The strip runs at the SAME rate as the windows: one ratio, set to 1.
   //
@@ -367,8 +390,9 @@ Item {
   // did not survive was the windows going to 320 and the strip keeping its flat
   // 200: the ratio fell to 0.62 and the strip visibly stopped while the windows
   // were still moving. Raising it to 0.75 made it late again. andywei asked for
-  // the same rate, which is what this now is -- and tied to the window
-  // durations rather than written out, so it cannot drift again.
+  // the same rate; 0.85 is where it actually landed after looking at it, and
+  // the note above has said "the same rate" since without the value following.
+  // Tied to the window durations rather than written out, so it cannot drift.
   readonly property real stripTimeRatio: 0.85
   readonly property int stripOpenDuration: Math.round(root.openDuration * root.stripTimeRatio)
   readonly property int stripCloseDuration: Math.round(root.closeDuration * root.stripTimeRatio)
