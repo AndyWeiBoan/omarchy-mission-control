@@ -1521,8 +1521,29 @@ Item {
         const target = root.safeWorkspaceId(next.id);
         if (target === "")
           return;
-        root.dispatch("hl.dsp.focus({ workspace = \"" + target + "\" })",
-                      "workspace " + target);
+        panel.slideTarget = target;
+        panel.slideDir = dir;
+        exposeSlide.stop();
+        exposeLayer.x = 0;
+        exposeGhost.x = 0;
+        exposeGhost.visible = true;
+        exposeGhost.scheduleUpdate();
+        // Let the snapshot render one frame before the desktop changes.
+        slideDispatch.restart();
+      }
+
+      property string slideTarget: ""
+      property int slideDir: 1
+      Timer {
+        id: slideDispatch
+        interval: 32
+        onTriggered: {
+          exposeSlide.dir = panel.slideDir;
+          exposeLayer.x = panel.slideDir * stage.width;
+          root.dispatch("hl.dsp.focus({ workspace = \"" + panel.slideTarget + "\" })",
+                        "workspace " + panel.slideTarget);
+          exposeSlide.start();
+        }
       }
 
       function cycleWindow() {
@@ -2219,6 +2240,24 @@ Item {
           }
         }
 
+        // When ←/→ walks the strip, slide the exposé between
+        // desktops the way Hyprland's own workspace slide does.
+        // The old desktop is frozen into exposeGhost and slides out while the
+        // new one slides in from the other side.
+        ShaderEffectSource {
+          id: exposeGhost
+          width: stage.width
+          height: stage.height
+          sourceItem: exposeLayer
+          live: false
+          hideSource: false
+          visible: false
+        }
+
+        Item {
+          id: exposeLayer
+          width: stage.width
+          height: stage.height
         // --- exposé of the current desktop ----------------------------------
         Repeater {
           model: panel.windows
@@ -2687,6 +2726,23 @@ Item {
           font.family: root.fontFamily
           font.pixelSize: Math.round(22 * panel.uiScale)
           color: Qt.rgba(1, 1, 1, 0.35)
+        }
+        }
+
+        ParallelAnimation {
+          id: exposeSlide
+          property int dir: 1
+          NumberAnimation {
+            target: exposeLayer; property: "x"
+            from: exposeSlide.dir * stage.width; to: 0
+            duration: 380; easing.type: Easing.OutQuart
+          }
+          NumberAnimation {
+            target: exposeGhost; property: "x"
+            from: 0; to: -exposeSlide.dir * stage.width
+            duration: 380; easing.type: Easing.OutQuart
+          }
+          onFinished: { exposeGhost.visible = false; exposeGhost.x = 0 }
         }
       }
     }
