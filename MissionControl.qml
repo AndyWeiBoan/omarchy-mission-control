@@ -2040,6 +2040,10 @@ Item {
                         // workspace to test against.
                         live: root.shown
                         paintCursor: false
+                        // Through a layer, so a translucent window blends
+                        // over our wallpaper instead of writing its alpha
+                        // straight into the surface -- see the exposé view.
+                        layer.enabled: true
                       }
                     }
 
@@ -2486,6 +2490,13 @@ Item {
                 // "live" costs nothing extra beyond the frames themselves.
                 live: root.shown
                 paintCursor: false
+                // Through a layer, so a translucent window blends over our
+                // wallpaper. Drawn directly, a translucent capture (a terminal
+                // with background alpha, say) writes its alpha straight into
+                // this surface, and the real desktop shows through the hole:
+                // the full-size window ghosts behind its own thumbnail, and
+                // walking the strip shows Hyprland's workspace slide through it.
+                layer.enabled: true
 
                 // Re-request the capture whenever the window changes size.
                 //
